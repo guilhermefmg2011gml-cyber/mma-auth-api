@@ -6,11 +6,12 @@ export async function seedAdminIfEnabled() {
 
   const T = process.env.USERS_TABLE || "users";
   const E = process.env.EMAIL_COL || "email";
-  const P = process.env.PASS_COL || "password_hash";
-  const R = process.env.ROLE_COL || "role";
+  const P = process.env.PASS_COL  || "password_hash";
+  const R = process.env.ROLE_COL  || "role";
 
   const email = process.env.ADMIN_EMAIL || "administrador@mouramartinsadvogados.com.br";
-  const pass = process.env.ADMIN_PASSWORD || "Direito94@";
+  const pass  = process.env.ADMIN_PASSWORD || "Direito94@";
+
   const hash = bcrypt.hashSync(pass, 10);
 
   const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(T);
@@ -28,7 +29,7 @@ export async function seedAdminIfEnabled() {
   } else {
     const cols = [E, P].concat(R ? [R] : []);
     const vals = [email, hash].concat(R ? ["admin"] : []);
-    db.prepare(`INSERT INTO ${T} (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`).run(...vals);
+    db.prepare(`INSERT INTO ${T} (${cols.join(",")}) VALUES (${cols.map(()=>"?").join(",")})`).run(...vals);
     console.log("Seed: admin inserido.");
   }
 }
