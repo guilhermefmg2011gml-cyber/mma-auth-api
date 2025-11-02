@@ -1,8 +1,17 @@
 import { db } from "../db.js";
 
 const PERMS = {
-  admin: ["*", "users:read", "users:create", "users:update", "users:delete", "roles:assign", "logs:read"],
-  gestor: ["users:read", "users:create", "users:update", "logs:read"],
+  admin: [
+    "*",
+    "users:read",
+    "users:create",
+    "users:update",
+    "users:delete",
+    "roles:assign",
+    "logs:read",
+    "audit:read",
+  ],
+  gestor: ["users:read", "users:create", "users:update", "logs:read", "audit:read"],
   colab: [],
 };
 

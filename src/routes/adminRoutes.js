@@ -24,6 +24,7 @@ router.post("/users", requirePermission("users:create"), (req, res) => {
     const info = db.prepare("INSERT INTO users (email, password_hash, role) VALUES (?,?,?)").run(email, hash, role);
     audit({
       byUserId: req.user.id,
+      byUserEmail: req.user.email,
       action: "users:create",
       entity: "users",
       entityId: info.lastInsertRowid,
@@ -71,6 +72,7 @@ router.put("/users/:id", requirePermission("users:update"), (req, res) => {
 
   audit({
     byUserId: req.user.id,
+    byUserEmail: req.user.email,
     action: "users:update",
     entity: "users",
     entityId: id,
@@ -90,6 +92,7 @@ router.delete("/users/:id", requirePermission("users:delete"), (req, res) => {
 
   audit({
     byUserId: req.user.id,
+    byUserEmail: req.user.email,
     action: "users:delete",
     entity: "users",
     entityId: id,

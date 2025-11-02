@@ -1,25 +1,58 @@
-import express from "express";
+import { Router } from "express";
 import requireAuth from "../middleware/requireAuth.js";
 import attachUser from "../middleware/attachUser.js";
 import requirePermission from "../middleware/requirePermission.js";
 import { db } from "../db.js";
 
-const router = express.Router();
-router.use(requireAuth, attachUser, requirePermission("logs:read"));
+const router = Router();
 
-router.get("/audit", (req, res) => {
-  const { q = "", limit = 50, offset = 0 } = req.query;
-  const rows = db
-    .prepare(
-      `SELECT a.id, a.user_id, u.email AS user_email, a.action, a.entity, a.entity_id,
-              a.diff_json, a.ip, a.ua, a.created_at
-       FROM audit_logs a
-       LEFT JOIN users u ON u.id = a.user_id
-       WHERE (a.action LIKE ? OR a.entity LIKE ? OR u.email LIKE ?)
-       ORDER BY a.id DESC LIMIT ? OFFSET ?`
-    )
-    .all(`%${q}%`, `%${q}%`, `%${q}%`, Number(limit), Number(offset));
-  res.json(rows);
+router.use(requireAuth, attachUser);
+
+router.get(
+  "/audit/latest",
+  requirePermission("audit:read"),
+  (_req, res) => {
+    try {
+      const stmt = db.prepare(`
+        SELECT id, created_at, user_email, action, entity, entity_id, diff_json, ip, ua
+        FROM audit_logs
+        ORDER BY id DESC
+        LIMIT 20
+      `);
+      const rows = stmt.all();
+      return res.json(rows);
+    } catch (error) {
+      console.error("audit/latest error:", error.message);
+      return res.json([]);
+    }
+  }
+);
+
+router.get("/audit", requirePermission("audit:read"), (req, res) => {
+  try {
+    const { q = "", limit = 50, offset = 0 } = req.query;
+    const stmt = db.prepare(`
+      SELECT a.id, a.user_id, a.user_email, a.action, a.entity, a.entity_id,
+             a.diff_json, a.ip, a.ua, a.created_at
+      FROM audit_logs a
+      WHERE (
+        a.action LIKE @term OR
+        a.entity LIKE @term OR
+        IFNULL(a.user_email, "") LIKE @term
+      )
+      ORDER BY a.id DESC
+      LIMIT @limit OFFSET @offset
+    `);
+    const rows = stmt.all({
+      term: `%${q}%`,
+      limit: Number(limit),
+      offset: Number(offset),
+    });
+    return res.json(rows);
+  } catch (error) {
+    console.error("/audit error:", error.message);
+    return res.json([]);
+  }
 });
 
 export default router;
