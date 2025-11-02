@@ -1,3 +1,4 @@
+/* eslint-env node */
 import Database from "better-sqlite3";
 import "dotenv/config";
 

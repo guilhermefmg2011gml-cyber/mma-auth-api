@@ -16,8 +16,13 @@ const PERMS = {
 };
 
 export default function attachUser(req, res, next) {
-  const u = db.prepare("SELECT id, email, role FROM users WHERE id=?").get(req.auth.id);
-  if (!u) return res.status(401).json({ error: "USER_NOT_FOUND" });
-  req.user = { ...u, permissions: PERMS[u.role] || [] };
-  next();
+  try {
+    const u = db.prepare("SELECT id, email, role FROM users WHERE id=?").get(req.auth.id);
+    if (!u) return res.status(401).json({ error: "USER_NOT_FOUND" });
+    req.user = { ...u, permissions: PERMS[u.role] || [] };
+    return next();
+  } catch (error) {
+    console.error("attachUser error:", error.message);
+    return res.status(500).json({ error: "USER_LOOKUP_FAILED" });
+  }
 }

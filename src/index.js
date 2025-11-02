@@ -1,3 +1,4 @@
+/* eslint-env node */
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -7,7 +8,8 @@ import auditRoutes from "./routes/auditRoutes.js";
 import { seedAdminIfEnabled } from "./seed.js";
 
 const app = express();
-const ORIGIN = process.env.ALLOWED_ORIGIN || process.env.CORS_ORIGIN || "https://mouramartinsadvogados.com.br";
+const ORIGIN =
+  process.env.ALLOWED_ORIGIN || process.env.CORS_ORIGIN || "https://mouramartinsadvogados.com.br";
 
 app.use(cors({
   origin: ORIGIN,

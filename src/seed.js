@@ -1,3 +1,4 @@
+/* eslint-env node */
 import { db } from "./db.js";
 import bcrypt from "bcryptjs";
 

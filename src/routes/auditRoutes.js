@@ -31,6 +31,8 @@ router.get(
 router.get("/audit", requirePermission("audit:read"), (req, res) => {
   try {
     const { q = "", limit = 50, offset = 0 } = req.query;
+    const safeLimit = Number.isFinite(Number(limit)) ? Math.min(Number(limit), 200) : 50;
+    const safeOffset = Number.isFinite(Number(offset)) ? Math.max(Number(offset), 0) : 0;
     const stmt = db.prepare(`
       SELECT a.id, a.user_id, a.user_email, a.action, a.entity, a.entity_id,
              a.diff_json, a.ip, a.ua, a.created_at
@@ -45,8 +47,8 @@ router.get("/audit", requirePermission("audit:read"), (req, res) => {
     `);
     const rows = stmt.all({
       term: `%${q}%`,
-      limit: Number(limit),
-      offset: Number(offset),
+      limit: safeLimit,
+      offset: safeOffset,
     });
     return res.json(rows);
   } catch (error) {

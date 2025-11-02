@@ -1,3 +1,4 @@
+/* eslint-env node */
 import express from "express";
 import { db } from "../db.js";
 import bcrypt from "bcryptjs";
@@ -26,4 +27,5 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "SERVER_ERROR" });
   }
 });
+
 export default router;
