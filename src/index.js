@@ -13,14 +13,56 @@ import { seedAdminIfEnabled } from "./seed.js";
 import { db } from "./db.js";
 
 const app = express();
-const ORIGIN =
-  process.env.ALLOWED_ORIGIN || process.env.CORS_ORIGIN || "https://mouramartinsadvogados.com.br";
 
-app.use(cors({
-  origin: ORIGIN,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
+const DEFAULT_ORIGINS = [
+  "https://mouramartinsadvogados.com.br",
+  "https://www.mouramartinsadvogados.com.br",
+];
+
+function parseOrigins(value) {
+  if (!value) return null;
+  if (Array.isArray(value)) return value.filter(Boolean);
+  if (typeof value !== "string") return null;
+  return value
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const parsedOrigins =
+  parseOrigins(process.env.ALLOWED_ORIGINS) ||
+  parseOrigins(process.env.CORS_ORIGINS) ||
+  parseOrigins(process.env.ALLOWED_ORIGIN) ||
+  parseOrigins(process.env.CORS_ORIGIN);
+
+const ORIGINS = (parsedOrigins && parsedOrigins.length ? parsedOrigins : DEFAULT_ORIGINS).map((origin) =>
+  origin.endsWith("/") ? origin.slice(0, -1) : origin
+);
+
+if (process.env.NODE_ENV !== "production") {
+  ORIGINS.push("http://localhost:5173", "http://localhost:3000", "http://localhost:8080");
+}
+
+const ALLOWED_ORIGINS = Array.from(new Set(ORIGINS));
+
+console.log("[cors] allowed origins:", ALLOWED_ORIGINS.join(", "));
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) {
+        return callback(null, true);
+      }
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin not allowed: ${origin}`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use("/api/pdpj/webhook", express.raw({ type: "*/*", limit: "2mb" }));
 app.use(express.json());
@@ -133,4 +175,4 @@ async function scheduleWithCron(spec, handler, options) {
   console.log("[cron] Datajud sync agendado:", SPEC);
 })();
 
-app.listen(PORT, () => console.log(`API on :${PORT} (origin: ${ORIGIN})`));
+app.listen(PORT, () => console.log(`API on :${PORT} (origins: ${ALLOWED_ORIGINS.join(", ")})`));
