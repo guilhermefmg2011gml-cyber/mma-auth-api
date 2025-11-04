@@ -8,6 +8,7 @@ import auditRoutes from "./routes/auditRoutes.js";
 import casesRoutes from "./routes/casesRoutes.js";
 import processRoutes from "./routes/processRoutes.js";
 import pdpjRoutes from "./routes/pdpjRoutes.js";
+import datajudRoutes from "./routes/datajudRoutes.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import { db } from "./db.js";
 
@@ -29,6 +30,7 @@ app.get("/api/health", (_req, res) => res.send("OK"));
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/pdpj", pdpjRoutes);
+app.use("/api", datajudRoutes);
 app.use("/api", processRoutes);
 app.use("/api", casesRoutes);
 app.use("/api", auditRoutes);
@@ -102,6 +104,33 @@ async function scheduleWithCron(spec, handler, options) {
   } else {
     console.log("[cron] OABS_SYNC não definido — sincronização desativada.");
   }
+})();
+
+(async function scheduleDatajud() {
+  const SPEC = process.env.SYNC_CRON || "0 */6 * * *";
+  const SYNC_ENABLED = (process.env.SYNC_ENABLED ?? "true") !== "false";
+  if (!SYNC_ENABLED) {
+    console.log("[cron] Datajud sync desativado.");
+    return;
+  }
+  await scheduleWithCron(
+    SPEC,
+    async () => {
+      try {
+        console.log("[CRON] Datajud sync start");
+        const r = await fetch(`http://localhost:${process.env.PORT || 8080}/api/datajud/sync`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Cron": "1" },
+          body: JSON.stringify({}),
+        });
+        console.log("[CRON] Datajud sync status:", r.status);
+      } catch (e) {
+        console.error("[CRON] Datajud sync error:", e?.message || e);
+      }
+    },
+    { timezone: "America/Sao_Paulo" }
+  );
+  console.log("[cron] Datajud sync agendado:", SPEC);
 })();
 
 app.listen(PORT, () => console.log(`API on :${PORT} (origin: ${ORIGIN})`));

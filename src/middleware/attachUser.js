@@ -14,6 +14,7 @@ const PERMS = {
     "cases:write",
     "cases:link",
     "processes:write",
+    "processes:sync",
   ],
   gestor: [
     "users:read",

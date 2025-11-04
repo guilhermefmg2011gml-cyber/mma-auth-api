@@ -8,6 +8,37 @@ export const db = new Database(dbPath, { fileMustExist: false });
 
 db.pragma("journal_mode = WAL");
 
+// Campos extras para Datajud (ignora erro se a coluna já existir)
+for (const ddl of [
+  "ALTER TABLE processes ADD COLUMN tribunal TEXT;",
+  "ALTER TABLE processes ADD COLUMN grau TEXT;",
+  "ALTER TABLE processes ADD COLUMN classeCodigo TEXT;",
+  "ALTER TABLE processes ADD COLUMN classeNome TEXT;",
+  "ALTER TABLE processes ADD COLUMN orgaoCodigo TEXT;",
+  "ALTER TABLE processes ADD COLUMN orgaoNome TEXT;",
+  "ALTER TABLE processes ADD COLUMN dataAjuizamento TEXT;",
+  "ALTER TABLE processes ADD COLUMN nivelSigilo TEXT;",
+  "ALTER TABLE processes ADD COLUMN fonte TEXT;",
+  "ALTER TABLE processes ADD COLUMN last_seen_at INTEGER;"
+]) {
+  try { db.exec(ddl); } catch (_) {}
+}
+
+// Índices úteis
+for (const ddl of [
+  "CREATE INDEX IF NOT EXISTS ix_proc_num   ON processes(cnj_number);",
+  "CREATE INDEX IF NOT EXISTS ix_proc_fonte ON processes(fonte);",
+  "CREATE INDEX IF NOT EXISTS ix_events_unique ON process_events(process_id, codigo, dataHora);"
+]) {
+  try {
+    db.exec(ddl);
+  } catch (error) {
+    if (!String(error).toLowerCase().includes("no such table")) {
+      console.error("[db] erro ao criar índice:", error?.message || error);
+    }
+  }
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

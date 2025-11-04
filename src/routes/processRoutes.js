@@ -151,6 +151,34 @@ function ensureTables() {
   ensureColumn("area", "TEXT");
   ensureColumn("status", "TEXT");
   ensureColumn("origin", "TEXT");
+  ensureColumn("cnj_number", "TEXT");
+  ensureColumn("subject", "TEXT");
+  ensureColumn("situation", "TEXT");
+  ensureColumn("tribunal", "TEXT");
+  ensureColumn("grau", "TEXT");
+  ensureColumn("classeCodigo", "TEXT");
+  ensureColumn("classeNome", "TEXT");
+  ensureColumn("orgaoCodigo", "TEXT");
+  ensureColumn("orgaoNome", "TEXT");
+  ensureColumn("dataAjuizamento", "TEXT");
+  ensureColumn("nivelSigilo", "TEXT");
+  ensureColumn("fonte", "TEXT");
+  ensureColumn("last_seen_at", "INTEGER");
+
+  const ensureEventColumn = (name, def) => {
+    try {
+      run(`ALTER TABLE process_events ADD COLUMN ${name} ${def}`);
+    } catch (error) {
+      if (!String(error).toLowerCase().includes("duplicate")) {
+        console.error(`[process_events] erro ao criar coluna ${name}:`, error);
+      }
+    }
+  };
+
+  ensureEventColumn("codigo", "TEXT");
+  ensureEventColumn("nome", "TEXT");
+  ensureEventColumn("dataHora", "TEXT");
+  ensureEventColumn("raw", "TEXT");
 }
 
 ensureTables();
@@ -221,6 +249,21 @@ router.post("/processes/manual", requirePermission("processes:write"), (req, res
         oab: cleanText(party?.oab),
       });
     }
+    db.prepare(
+      `UPDATE processes SET
+         cnj_number = COALESCE(cnj_number, @cnj),
+         subject = COALESCE(subject, @subject),
+         situation = COALESCE(situation, @situation),
+         fonte = COALESCE(fonte, 'manual'),
+         last_seen_at = COALESCE(last_seen_at, @last_seen_at)
+       WHERE id = @id`
+    ).run({
+      id: processId,
+      cnj,
+      subject: cleanText(subject) || cleanText(area),
+      situation: cleanText(situation) || "Em andamento",
+      last_seen_at: Date.now(),
+    });
     return processId;
   });
 
