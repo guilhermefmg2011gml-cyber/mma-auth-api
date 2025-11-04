@@ -1,14 +1,17 @@
-const BASE = process.env.DATAJUD_BASE || "https://api-publica.datajud.cnj.jus.br";
-const APIKEY = process.env.DATAJUD_API_KEY;
+import { DATAJUD_API_BASE, DATAJUD_API_KEY } from "../config/datajud.js";
 
 function headers() {
-  if (!APIKEY) throw new Error("DATAJUD_API_KEY ausente");
-  return { "Authorization": `APIKey ${APIKEY}`, "Content-Type": "application/json" };
+  if (!DATAJUD_API_KEY) throw new Error("DATAJUD_API_KEY ausente");
+  return {
+    "Content-Type": "application/json",
+    Authorization: `APIKey ${DATAJUD_API_KEY}`,
+    "x-api-key": DATAJUD_API_KEY,
+  };
 }
 
 // Busca por número CNJ em um alias específico (ex.: api_publica_tjgo)
 export async function datajudSearchByCNJ(alias, numeroProcesso, size = 10) {
-  const r = await fetch(`${BASE}/${alias}/_search`, {
+  const r = await fetch(`${DATAJUD_API_BASE}/${alias}/_search`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ size, query: { match: { numeroProcesso } } })
@@ -27,7 +30,7 @@ export async function datajudScroll(alias, dsl, onPage) {
       sort: [{ "@timestamp": { order: "asc" } }],
       ...(search_after ? { search_after } : {})
     };
-    const r = await fetch(`${BASE}/${alias}/_search`, {
+    const r = await fetch(`${DATAJUD_API_BASE}/${alias}/_search`, {
       method: "POST", headers: headers(), body: JSON.stringify(body)
     });
     if (!r.ok) throw new Error(`Datajud ${alias} ${r.status}`);

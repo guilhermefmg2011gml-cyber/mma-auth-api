@@ -31,7 +31,10 @@ router.post("/login", async (req, res) => {
 });
 
 router.get("/me", requireAuth, attachUser, (req, res) => {
-  res.json({ user: req.user });
+  if (req.user) {
+    return res.json({ user: req.user });
+  }
+  return res.status(401).json({ error: "unauthorized" });
 });
 
 router.post("/logout", (_req, res) => {
