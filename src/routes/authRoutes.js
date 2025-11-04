@@ -3,6 +3,8 @@ import express from "express";
 import { db } from "../db.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import requireAuth from "../middleware/requireAuth.js";
+import attachUser from "../middleware/attachUser.js";
 
 const router = express.Router();
 
@@ -26,6 +28,14 @@ router.post("/login", async (req, res) => {
     console.error("Login error:", e);
     res.status(500).json({ error: "SERVER_ERROR" });
   }
+});
+
+router.get("/me", requireAuth, attachUser, (req, res) => {
+  res.json({ user: req.user });
+});
+
+router.post("/logout", (_req, res) => {
+  res.json({ ok: true });
 });
 
 export default router;

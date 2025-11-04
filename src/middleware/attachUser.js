@@ -10,9 +10,20 @@ const PERMS = {
     "roles:assign",
     "logs:read",
     "audit:read",
+    "cases:read",
+    "cases:write",
+    "cases:link",
   ],
-  gestor: ["users:read", "users:create", "users:update", "logs:read", "audit:read"],
-  colab: [],
+  gestor: [
+    "users:read",
+    "users:create",
+    "users:update",
+    "logs:read",
+    "audit:read",
+    "cases:read",
+    "cases:write",
+  ],
+  colab: ["cases:read"],
 };
 
 export default function attachUser(req, res, next) {
