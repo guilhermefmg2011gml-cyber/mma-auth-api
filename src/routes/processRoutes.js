@@ -1,5 +1,7 @@
-import express from "express";
+import express, { Router } from "express";
+import { randomUUID } from "crypto";
 import { db } from "../db.js";
+import { normalizeCNJ } from "../services/pdpjClient.js";
 import requireAuth from "../middleware/requireAuth.js";
 import attachUser from "../middleware/attachUser.js";
 import requirePermission from "../middleware/requirePermission.js";
@@ -28,6 +30,12 @@ const get = (sql, params = []) => {
     return stmt.get(...params);
   }
   return stmt.get(params);
+};
+
+const cleanText = (value) => {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text.length ? text : null;
 };
 
 function splitCsvLine(line, delimiter) {
@@ -96,6 +104,11 @@ function ensureTables() {
     oab TEXT,
     situacao TEXT,
     data_distribuicao TEXT,
+    court TEXT,
+    jurisdiction TEXT,
+    area TEXT,
+    status TEXT,
+    origin TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   );`);
@@ -111,11 +124,114 @@ function ensureTables() {
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY(process_id) REFERENCES processes(id)
   );`);
+
+  run(`CREATE TABLE IF NOT EXISTS process_parties (
+    id TEXT PRIMARY KEY,
+    process_id INTEGER NOT NULL,
+    role TEXT,
+    name TEXT,
+    doc TEXT,
+    oab TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY(process_id) REFERENCES processes(id) ON DELETE CASCADE
+  );`);
+
+  const ensureColumn = (name, def) => {
+    try {
+      run(`ALTER TABLE processes ADD COLUMN ${name} ${def}`);
+    } catch (error) {
+      if (!String(error).toLowerCase().includes("duplicate")) {
+        console.error(`[processes] erro ao criar coluna ${name}:`, error);
+      }
+    }
+  };
+
+  ensureColumn("court", "TEXT");
+  ensureColumn("jurisdiction", "TEXT");
+  ensureColumn("area", "TEXT");
+  ensureColumn("status", "TEXT");
+  ensureColumn("origin", "TEXT");
 }
 
 ensureTables();
 
 router.use(requireAuth, attachUser);
+
+router.post("/processes/manual", requirePermission("processes:write"), (req, res) => {
+  const {
+    cnj_number,
+    court,
+    jurisdiction,
+    area,
+    subject,
+    situation = "Em andamento",
+    status = "ativo",
+    parties = [],
+  } = req.body || {};
+
+  const cnj = normalizeCNJ(cnj_number || "");
+  if (!cnj) return res.status(400).json({ error: "invalid_cnj" });
+
+  const digits = cnj.replace(/\D+/g, "");
+  const exists = get(
+    `SELECT id FROM processes WHERE cnj = ? OR REPLACE(REPLACE(REPLACE(REPLACE(cnj, '.', ''), '-', ''), '/', ''), ' ', '') = ?`,
+    [cnj, digits]
+  );
+  if (exists) return res.status(409).json({ error: "already_exists", id: exists.id });
+
+  const insertParty = db.prepare(
+    `INSERT INTO process_parties (id, process_id, role, name, doc, oab)
+     VALUES (@id, @process_id, @role, @name, @doc, @oab)`
+  );
+
+  const createProcess = db.transaction(() => {
+    const now = new Date().toISOString();
+    const info = db.prepare(
+      `INSERT INTO processes (
+        cnj, titulo, classe, assunto, comarca, uf, polo, cliente, oab, situacao,
+        data_distribuicao, court, jurisdiction, area, status, origin, created_at, updated_at
+      ) VALUES (
+        @cnj, @titulo, @classe, @assunto, @comarca, NULL, NULL, NULL, NULL, @situacao,
+        NULL, @court, @jurisdiction, @area, @status, @origin, @now, @now
+      )`
+    ).run({
+      cnj,
+      titulo: cleanText(subject) || cleanText(area),
+      classe: cleanText(area),
+      assunto: cleanText(subject),
+      comarca: cleanText(court),
+      situacao: cleanText(situation) || "Em andamento",
+      court: cleanText(court),
+      jurisdiction: cleanText(jurisdiction),
+      area: cleanText(area),
+      status: cleanText(status) || "ativo",
+      origin: "manual",
+      now,
+    });
+
+    const processId = info.lastInsertRowid;
+    const list = Array.isArray(parties) ? parties : [];
+    for (const party of list) {
+      insertParty.run({
+        id: randomUUID(),
+        process_id: processId,
+        role: cleanText(party?.role),
+        name: cleanText(party?.name),
+        doc: cleanText(party?.doc),
+        oab: cleanText(party?.oab),
+      });
+    }
+    return processId;
+  });
+
+  try {
+    const id = createProcess();
+    return res.status(201).json({ id });
+  } catch (error) {
+    console.error("[processes] manual insert error", error);
+    return res.status(500).json({ error: "insert_failed" });
+  }
+});
 
 router.get("/processes", requirePermission("cases:read"), (req, res) => {
   const { q: term, uf, oab } = req.query;
@@ -153,11 +269,88 @@ router.get("/processes/:id", requirePermission("cases:read"), (req, res) => {
     if (!row) {
       return res.status(404).json({ error: "processo não encontrado" });
     }
-    return res.json(row);
+    const parties = q(
+      `SELECT id, role, name, doc, oab
+       FROM process_parties
+       WHERE process_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [row.id]
+    );
+
+    return res.json({
+      ...row,
+      parties,
+      court: row.court ?? row.comarca ?? null,
+      jurisdiction: row.jurisdiction ?? null,
+      area: row.area ?? row.classe ?? null,
+      subject: row.assunto ?? null,
+      situation: row.situacao ?? null,
+    });
   } catch (error) {
     console.error("[processes] detail error", error);
     return res.status(500).json({ error: "Erro ao carregar processo" });
   }
+});
+
+router.patch("/processes/:id", requirePermission("processes:write"), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+
+  const row = get("SELECT id FROM processes WHERE id = ?", [id]);
+  if (!row) return res.status(404).json({ error: "not_found" });
+
+  const { court, jurisdiction, area, subject, situation, status } = req.body || {};
+  const updates = [];
+  const params = { id, now: new Date().toISOString() };
+
+  if (court !== undefined) {
+    const text = cleanText(court);
+    updates.push("court = @court");
+    params.court = text;
+    updates.push("comarca = @comarca");
+    params.comarca = text;
+  }
+
+  if (jurisdiction !== undefined) {
+    updates.push("jurisdiction = @jurisdiction");
+    params.jurisdiction = cleanText(jurisdiction);
+  }
+
+  if (area !== undefined) {
+    const text = cleanText(area);
+    updates.push("area = @area");
+    params.area = text;
+    updates.push("classe = @classe");
+    params.classe = text;
+  }
+
+  if (subject !== undefined) {
+    const text = cleanText(subject);
+    updates.push("assunto = @assunto");
+    params.assunto = text;
+  }
+
+  if (situation !== undefined) {
+    updates.push("situacao = @situacao");
+    params.situacao = cleanText(situation);
+  }
+
+  if (status !== undefined) {
+    updates.push("status = @status");
+    params.status = cleanText(status);
+  }
+
+  if (!updates.length) {
+    db.prepare("UPDATE processes SET updated_at = @now WHERE id = @id").run(params);
+    return res.sendStatus(204);
+  }
+
+  updates.push("updated_at = @now");
+  db.prepare(`UPDATE processes SET ${updates.join(", ")} WHERE id = @id`).run(params);
+
+  return res.sendStatus(204);
 });
 
 router.get(
@@ -172,13 +365,68 @@ router.get(
          ORDER BY datetime(data_evento) DESC, id DESC`,
         [req.params.id]
       );
-      return res.json(rows);
+      const mapped = rows.map((ev) => {
+        let detail = null;
+        if (ev.payload) {
+          try {
+            const parsed = JSON.parse(ev.payload);
+            detail = parsed?.detail ?? parsed?.descricao ?? parsed ?? ev.payload;
+          } catch {
+            detail = ev.payload;
+          }
+        }
+        return {
+          ...ev,
+          title: ev.descricao,
+          detail,
+        };
+      });
+      return res.json(mapped);
     } catch (error) {
       console.error("[processes] events error", error);
       return res.status(500).json({ error: "Erro ao carregar eventos" });
     }
   }
 );
+
+router.post("/processes/:id/events", requirePermission("processes:write"), (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    return res.status(400).json({ error: "invalid_id" });
+  }
+
+  const { title, detail, at } = req.body || {};
+  const main = cleanText(title);
+  if (!main) return res.status(400).json({ error: "title_required" });
+
+  const exists = get("SELECT id FROM processes WHERE id = ?", [id]);
+  if (!exists) return res.status(404).json({ error: "not_found" });
+
+  const timestamp = at !== undefined && at !== null ? Number(at) : Date.now();
+  const parsedDate = new Date(timestamp);
+  const when = Number.isNaN(parsedDate.getTime()) ? new Date() : parsedDate;
+
+  db.prepare(
+    `INSERT INTO process_events (process_id, tipo, descricao, data_evento, origem, payload)
+     VALUES (@process_id, @tipo, @descricao, @data_evento, @origem, @payload)`
+  ).run({
+    process_id: id,
+    tipo: "manual",
+    descricao: main,
+    data_evento: when.toISOString(),
+    origem: "manual",
+    payload: detail !== undefined && detail !== null && String(detail).trim().length
+      ? JSON.stringify({ detail: String(detail) })
+      : null,
+  });
+
+  db.prepare(`UPDATE processes SET updated_at = @now WHERE id = @id`).run({
+    id,
+    now: new Date().toISOString(),
+  });
+
+  return res.sendStatus(201);
+});
 
 const textParser = express.text({ type: "*/*", limit: "10mb" });
 
