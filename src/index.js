@@ -14,53 +14,26 @@ import { db } from "./db.js";
 
 const app = express();
 
-const DEFAULT_ORIGINS = [
+const DEFAULT_ALLOWED_ORIGINS = [
   "https://mouramartinsadvogados.com.br",
   "https://www.mouramartinsadvogados.com.br",
 ];
 
-function parseOrigins(value) {
-  if (!value) return null;
-  if (Array.isArray(value)) return value.filter(Boolean);
-  if (typeof value !== "string") return null;
-  return value
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
+const DEV_ORIGINS = ["http://localhost:5173", "http://localhost:3000", "http://localhost:8080"];
 
-const parsedOrigins =
-  parseOrigins(process.env.ALLOWED_ORIGINS) ||
-  parseOrigins(process.env.CORS_ORIGINS) ||
-  parseOrigins(process.env.ALLOWED_ORIGIN) ||
-  parseOrigins(process.env.CORS_ORIGIN);
-
-const ORIGINS = (parsedOrigins && parsedOrigins.length ? parsedOrigins : DEFAULT_ORIGINS).map((origin) =>
-  origin.endsWith("/") ? origin.slice(0, -1) : origin
-);
-
-if (process.env.NODE_ENV !== "production") {
-  ORIGINS.push("http://localhost:5173", "http://localhost:3000", "http://localhost:8080");
-}
-
-const ALLOWED_ORIGINS = Array.from(new Set(ORIGINS));
+const ALLOWED_ORIGINS = [
+  ...DEFAULT_ALLOWED_ORIGINS,
+  ...(process.env.NODE_ENV !== "production" ? DEV_ORIGINS : []),
+];
 
 console.log("[cors] allowed origins:", ALLOWED_ORIGINS.join(", "));
 
 app.use(
   cors({
-    origin(origin, callback) {
-      if (!origin) {
-        return callback(null, true);
-      }
-      if (ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
-      return callback(new Error(`Origin not allowed: ${origin}`));
-    },
-    credentials: true,
+    origin: ALLOWED_ORIGINS,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   })
 );
 
