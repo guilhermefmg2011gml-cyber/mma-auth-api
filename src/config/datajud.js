@@ -17,17 +17,17 @@ export function parseAliases(raw) {
   }
 
   return input
-    .split(/[\n,;]+/g)
+    .split(/[\n,;\s]+/g)
     .map((value) => value.trim())
     .filter(Boolean);
 }
 
-export const DATAJUD_API_BASE =
-  process.env.DATAJUD_API_BASE || "https://api-publica.datajud.cnj.jus.br";
+const RAW_BASE = process.env.DATAJUD_API_BASE || process.env.DATAJUD_BASE;
+export const DATAJUD_API_BASE = RAW_BASE || "https://api-publica.datajud.cnj.jus.br";
 export const DATAJUD_API_KEY = process.env.DATAJUD_API_KEY || "";
 export const DATAJUD_ALIASES = Object.freeze(parseAliases(process.env.DATAJUD_ALIASES));
 
 if (!DATAJUD_API_KEY) {
   console.warn("[datajud] API key ausente! Configure DATAJUD_API_KEY.");
 }
-console.log(`[datajud] aliases carregados: ${DATAJUD_ALIASES.length}`);
+cconsole.log(`[datajud] aliases carregados: ${DATAJUD_ALIASES.length}`);

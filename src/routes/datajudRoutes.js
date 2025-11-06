@@ -1,14 +1,18 @@
 import { Router } from "express";
 import requireAuth from "../middleware/requireAuth.js";
 import requirePermission from "../middleware/requirePermission.js";
+import { toFormattedCNJ } from "../lib/cnj.js";
 import { datajudSearchByCNJ, datajudScroll } from "../services/datajud.js";
-import { mapDatajudSource, upsertProcessFromDatajud, insertEventsFromDatajud, normalizeCNJ } from "../services/processes.js";
+import { mapDatajudSource, upsertProcessFromDatajud, insertEventsFromDatajud } from "../services/processes.js";
 import db from "../db.js";
-import { DATAJUD_ALIASES, DATAJUD_API_BASE, DATAJUD_API_KEY } from "../config/datajud.js";
+import { DATAJUD_ALIASES } from "../config/datajud.js";
 
 const router = Router();
+
+const ALIASES = Array.from(DATAJUD_ALIASES || []);
+
 function getAliases() {
-  return Array.from(DATAJUD_ALIASES);
+  return Array.from(ALIASES);
 }
 
 function findProcessId(numero) {
@@ -19,67 +23,75 @@ router.get("/datajud/aliases", requireAuth, (_req, res) => {
   res.json({ aliases: getAliases() });
 });
 
+// Busca por CNJ (aceita com ou sem máscara no query param `numero`)
 router.get("/datajud/search/numero", requireAuth, async (req, res) => {
-  const numero = (req.query.numero || "").trim();
-  if (!numero) {
-    return res.status(400).json({ error: "missing_numero" });
+  const raw = String(req.query.numero || "").trim();
+  const cnj = toFormattedCNJ(raw);
+  if (!cnj) {
+    return res
+      .status(400)
+      .json({ error: "CNJ inválido (esperado 20 dígitos -> 0000000-00.0000.0.00.0000)" });
   }
 
   const aliases = getAliases();
   if (!aliases.length) {
     return res.status(500).json({ error: "aliases_not_configured" });
   }
-  if (!DATAJUD_API_KEY) {
-    return res.status(500).json({ error: "api_key_not_configured" });
+
+  const results = [];
+  for (const alias of aliases) {
+    try {
+      const hits = await datajudSearchByCNJ(alias, cnj);
+      const count = Array.isArray(hits) ? hits.length : 0;
+      results.push({
+        alias,
+        ok: true,
+        status: 200,
+        count,
+        first: count ? (hits[0]?._source || hits[0]) : null,
+      });
+    } catch (e) {
+      results.push({
+        alias,
+        ok: false,
+        status: 400,
+        error: String(e.message).slice(0, 300),
+      });
+    }
   }
 
+  return res.json({ numero: cnj, results });
+});
+
+// Rota de diagnóstico (opcional): testa 1 alias e devolve a mensagem crua de erro do provedor
+router.get("/datajud/debug/alias", requireAuth, async (req, res) => {
+  const alias = String(req.query.alias || "").trim();
+  const cnj = toFormattedCNJ(req.query.numero || "");
+  if (!alias) return res.status(400).json({ error: "alias obrigatório" });
+  if (!cnj) return res.status(400).json({ error: "CNJ inválido (20 dígitos)" });
+
   try {
-    const results = [];
-    for (const alias of aliases) {
-      const url = `${DATAJUD_API_BASE}/${alias}/processos/${encodeURIComponent(numero)}`;
-      try {
-        const response = await fetch(url, {
-          headers: {
-            "x-api-key": DATAJUD_API_KEY,
-            Authorization: `APIKey ${DATAJUD_API_KEY}`,
-          },
-        });
-
-        if (!response.ok) {
-          results.push({ alias, ok: false, status: response.status });
-          continue;
-        }
-
-        const contentType = response.headers.get("content-type") || "";
-        if (!contentType.toLowerCase().includes("application/json")) {
-          const text = await response.text();
-          results.push({ alias, ok: false, status: response.status, error: "invalid_content_type", preview: text.slice(0, 200) });
-          continue;
-        }
-
-        const data = await response.json();
-        results.push({ alias, ok: true, status: response.status, data });
-      } catch (error) {
-        results.push({ alias, ok: false, status: 0, error: error?.message || String(error) });
-      }
-    }
-
-    return res.json({ numero, results });
-  } catch (error) {
-    console.error("[datajud] search error", error?.message || error);
-    return res.status(502).json({ error: "upstream_error" });
+    const hits = await datajudSearchByCNJ(alias, cnj);
+    return res.json({
+      alias,
+      numero: cnj,
+      count: hits.length,
+      sample: hits[0] || null,
+    });
+  } catch (e) {
+    return res.status(502).json({ alias, numero: cnj, error: String(e.message) });
   }
 });
 
 // GET /api/datajud/:numero  -> busca por CNJ nos aliases e salva/atualiza
 router.get("/datajud/:numero", requireAuth, async (req, res) => {
-  const numero = normalizeCNJ(req.params.numero);
+  const numero = toFormattedCNJ(req.params.numero || "");
   if (!numero) return res.status(400).json({ ok: false, error: "CNJ inválido" });
 
   for (const alias of getAliases()) {
     try {
-      const json = await datajudSearchByCNJ(alias, numero);
-      const hit = json?.hits?.hits?.[0];
+      const hits = await datajudSearchByCNJ(alias, numero);
+      const hit = hits?.[0];
       if (hit?._source) {
         const mapped = mapDatajudSource(hit._source);
         const pid = upsertProcessFromDatajud(mapped);

@@ -1,23 +1,64 @@
-import { DATAJUD_API_BASE, DATAJUD_API_KEY } from "../config/datajud.js";
+import { DATAJUD_API_BASE as CONFIG_BASE, DATAJUD_API_KEY as CONFIG_API_KEY } from "../config/datajud.js";
 
-function headers() {
-  if (!DATAJUD_API_KEY) throw new Error("DATAJUD_API_KEY ausente");
+const BASE = CONFIG_BASE || "https://api-publica.datajud.cnj.jus.br";
+const APIKEY = CONFIG_API_KEY;
+
+// Cabeçalhos conforme doc oficial: Authorization: APIKey <token>
+function datajudHeaders() {
+  if (!APIKEY) throw new Error("DATAJUD_API_KEY ausente nas variáveis de ambiente.");
   return {
+    Authorization: `APIKey ${APIKEY}`,
+    Accept: "application/json",
     "Content-Type": "application/json",
-    Authorization: `APIKey ${DATAJUD_API_KEY}`,
-    "x-api-key": DATAJUD_API_KEY,
   };
 }
 
-// Busca por número CNJ em um alias específico (ex.: api_publica_tjgo)
-export async function datajudSearchByCNJ(alias, numeroProcesso, size = 10) {
-  const r = await fetch(`${DATAJUD_API_BASE}/${alias}/_search`, {
+function buildError(alias, res, text) {
+  return new Error(`Datajud ${alias} ${res.status}: ${text.slice(0, 400)}`);
+}
+
+function ensureJson(alias, text) {
+  try {
+    return JSON.parse(text);
+  } catch (_err) {
+    throw new Error(`Datajud ${alias}: resposta não-JSON`);
+  }
+}
+
+/**
+ * Faz POST /{alias}/_search buscando por numeroProcesso (com máscara CNJ).
+ * Retorna o array de hits (Elasticsearch).
+ */
+export async function datajudSearchByCNJ(alias, cnjFormatted, size = 3) {
+  const url = `${BASE}/${alias}/_search`;
+
+  const body = {
+    size,
+    query: {
+      bool: {
+        should: [
+          { term: { "numeroProcesso.keyword": cnjFormatted } },
+          { match_phrase: { numeroProcesso: cnjFormatted } }
+        ],
+        minimum_should_match: 1,
+      },
+    },
+  };
+
+  const res = await fetch(url, {
     method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ size, query: { match: { numeroProcesso } } })
+    headers: datajudHeaders(),
+    body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`Datajud ${alias} ${r.status}`);
-  return r.json();
+  const text = await res.text();
+
+  if (!res.ok) {
+    throw buildError(alias, res, text);
+  }
+
+  const json = ensureJson(alias, text);
+  const hits = json?.hits?.hits || [];
+  return hits;
 }
 
 // Varredura em lote com paginação por search_after
@@ -28,13 +69,16 @@ export async function datajudScroll(alias, dsl, onPage) {
       size: dsl.size ?? 200,
       query: dsl.query ?? { match_all: {} },
       sort: [{ "@timestamp": { order: "asc" } }],
-      ...(search_after ? { search_after } : {})
+      ...(search_after ? { search_after } : {}),
     };
-    const r = await fetch(`${DATAJUD_API_BASE}/${alias}/_search`, {
-      method: "POST", headers: headers(), body: JSON.stringify(body)
+    const res = await fetch(`${BASE}/${alias}/_search`, {
+      method: "POST",
+      headers: datajudHeaders(),
+      body: JSON.stringify(body),
     });
-    if (!r.ok) throw new Error(`Datajud ${alias} ${r.status}`);
-    const json = await r.json();
+    const text = await res.text();
+    if (!res.ok) throw buildError(alias, res, text);
+    const json = ensureJson(alias, text);
     const page = json?.hits?.hits ?? [];
     if (!page.length) break;
     await onPage(page);
