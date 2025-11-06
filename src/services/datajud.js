@@ -25,26 +25,15 @@ function ensureJson(alias, text) {
   }
 }
 
-/**
- * Faz POST /{alias}/_search buscando por numeroProcesso (com máscara CNJ).
- * Retorna o array de hits (Elasticsearch).
- */
-export async function datajudSearchByCNJ(alias, cnjFormatted, size = 3) {
+function hitsTotal(json) {
+  const total = json?.hits?.total;
+  if (typeof total === "number") return total;
+  if (typeof total?.value === "number") return total.value;
+  return Array.isArray(json?.hits?.hits) ? json.hits.hits.length : 0;
+}
+
+async function postSearch(alias, body) {
   const url = `${BASE}/${alias}/_search`;
-
-  const body = {
-    size,
-    query: {
-      bool: {
-        should: [
-          { term: { "numeroProcesso.keyword": cnjFormatted } },
-          { match_phrase: { numeroProcesso: cnjFormatted } }
-        ],
-        minimum_should_match: 1,
-      },
-    },
-  };
-
   const res = await fetch(url, {
     method: "POST",
     headers: datajudHeaders(),
@@ -57,8 +46,55 @@ export async function datajudSearchByCNJ(alias, cnjFormatted, size = 3) {
   }
 
   const json = ensureJson(alias, text);
-  const hits = json?.hits?.hits || [];
-  return hits;
+  return {
+    hits: json?.hits?.hits || [],
+    total: hitsTotal(json),
+  };
+}
+
+function cnjRaizMask(cnjFormatted) {
+  const parts = String(cnjFormatted).split(".");
+  if (parts.length >= 2) {
+    return `${parts[0]}.${parts[1]}`;
+  }
+  return cnjFormatted;
+}
+
+/**
+ * Faz POST /{alias}/_search buscando por numeroProcesso (com máscara CNJ).
+ * Retorna o array de hits (Elasticsearch).
+ */
+export async function datajudSearchByCNJ(alias, cnjFormatted) {
+  const attempts = [
+    {
+      size: 1,
+      query: { term: { "numeroProcesso.keyword": cnjFormatted } },
+    },
+    {
+      size: 3,
+      query: { wildcard: { "numeroProcesso.keyword": `*${cnjFormatted}*` } },
+    },
+    {
+      size: 5,
+      query: {
+        wildcard: {
+          "numeroProcesso.keyword": `*${cnjRaizMask(cnjFormatted)}*`,
+        },
+      },
+    },
+  ];
+
+  let lastHits = [];
+
+  for (const body of attempts) {
+    const { hits, total } = await postSearch(alias, body);
+    lastHits = hits;
+    if (total > 0) {
+      return hits;
+    }
+  }
+
+  return lastHits;
 }
 
 // Varredura em lote com paginação por search_after
