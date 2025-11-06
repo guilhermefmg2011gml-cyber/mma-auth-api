@@ -30,4 +30,4 @@ export const DATAJUD_ALIASES = Object.freeze(parseAliases(process.env.DATAJUD_AL
 if (!DATAJUD_API_KEY) {
   console.warn("[datajud] API key ausente! Configure DATAJUD_API_KEY.");
 }
-cconsole.log(`[datajud] aliases carregados: ${DATAJUD_ALIASES.length}`);
+console.log(`[datajud] aliases carregados: ${DATAJUD_ALIASES.length}`);
