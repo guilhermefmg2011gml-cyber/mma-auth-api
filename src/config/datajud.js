@@ -25,9 +25,18 @@ export function parseAliases(raw) {
 const RAW_BASE = process.env.DATAJUD_API_BASE || process.env.DATAJUD_BASE;
 export const DATAJUD_API_BASE = RAW_BASE || "https://api-publica.datajud.cnj.jus.br";
 export const DATAJUD_API_KEY = process.env.DATAJUD_API_KEY || "";
+export const DATAJUD_AUTH_TOKEN =
+  process.env.DATAJUD_AUTH_TOKEN || process.env.DATAJUD_BEARER_TOKEN || "";
+export const DATAJUD_CNJ_JWT = process.env.DATAJUD_CNJ_JWT || process.env.DATAJUD_JWT || "";
 export const DATAJUD_ALIASES = Object.freeze(parseAliases(process.env.DATAJUD_ALIASES));
 
 if (!DATAJUD_API_KEY) {
   console.warn("[datajud] API key ausente! Configure DATAJUD_API_KEY.");
+}
+if (!DATAJUD_AUTH_TOKEN) {
+  console.warn("[datajud] token Bearer ausente! Configure DATAJUD_AUTH_TOKEN.");
+}
+if (!DATAJUD_CNJ_JWT) {
+  console.warn("[datajud] x-cnj-jwt ausente! Configure DATAJUD_CNJ_JWT.");
 }
 console.log(`[datajud] aliases carregados: ${DATAJUD_ALIASES.length}`);
