@@ -37,6 +37,10 @@ export function audit({ byUserId, byUserEmail, action, entity, entityId, diff, i
       ua: ua ?? "",
     });
   } catch (error) {
-    console.error("audit insert error:", error.message);
+    if (error instanceof Error) {
+      console.error("audit insert error:", error.message);
+    } else {
+      console.error("audit insert error:", error);
+    }
   }
 }

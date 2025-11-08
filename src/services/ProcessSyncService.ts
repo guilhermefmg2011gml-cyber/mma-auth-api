@@ -83,10 +83,10 @@ export async function upsertCase(found: FoundProcess, origem: CaseOrigin): Promi
   }
 
   const existing = db
-    .prepare<[string, string], CaseRow & { origem: CaseOrigin }>(
+    .prepare(
       "SELECT id, numero_cnj, tribunal, orgao, classe, assunto, origem FROM cases WHERE numero_cnj=? AND tribunal=?"
     )
-    .get(numero, found.tribunal);
+    .get(numero, found.tribunal) as (CaseRow & { origem: CaseOrigin }) | undefined;
 
   const agora = new Date().toISOString();
 
@@ -204,7 +204,9 @@ function ensureWatchLog(target: WatchTarget, status: "ok" | "erro", detalhes: st
 }
 
 export async function runDailySync(): Promise<void> {
-  const targets = db.prepare<[], WatchTarget>("SELECT id, tipo, valor, ativo FROM watch_targets WHERE ativo=1").all();
+  const targets = db
+    .prepare("SELECT id, tipo, valor, ativo FROM watch_targets WHERE ativo=1")
+    .all() as WatchTarget[];
 
   for (const target of targets) {
     const inicio = new Date().toISOString();
@@ -216,7 +218,9 @@ export async function runDailySync(): Promise<void> {
         }
 
         const processos = await searchProcessesByLawyer(parsed.nome, parsed.oab);
-        const lawyer = db.prepare<[string], Lawyer>("SELECT * FROM lawyers WHERE nome=?").get(parsed.nome.trim());
+        const lawyer = db
+          .prepare("SELECT * FROM lawyers WHERE nome=?")
+          .get(parsed.nome.trim()) as Lawyer | undefined;
         const lawyersToAttach = lawyer ? [lawyer] : [];
 
         for (const processo of processos) {
@@ -231,8 +235,8 @@ export async function runDailySync(): Promise<void> {
       if (target.tipo === "case") {
         const numero = normalizarCNJ(target.valor);
         const processo = db
-          .prepare<[string], CaseRow & { tribunal: string }>("SELECT * FROM cases WHERE numero_cnj=?")
-          .get(numero);
+          .prepare("SELECT * FROM cases WHERE numero_cnj=?")
+          .get(numero) as (CaseRow & { tribunal: string }) | undefined;
         if (processo) {
           await syncCaseMovements(processo.id, processo.numero_cnj, processo.tribunal);
         }

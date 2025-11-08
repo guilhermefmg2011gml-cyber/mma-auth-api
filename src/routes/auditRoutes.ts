@@ -23,7 +23,11 @@ router.get(
       const rows = stmt.all();
       return res.json(rows);
     } catch (error) {
-      console.error("audit/latest error:", error.message);
+      if (error instanceof Error) {
+        console.error("audit/latest error:", error.message);
+      } else {
+        console.error("audit/latest error:", error);
+      }
       return res.json([]);
     }
   }
@@ -53,7 +57,11 @@ router.get("/audit", requirePermission("audit:read"), (req: Request, res: Respon
     });
     return res.json(rows);
   } catch (error) {
-    console.error("/audit error:", error.message);
+    if (error instanceof Error) {
+      console.error("/audit error:", error.message);
+    } else {
+      console.error("/audit error:", error);
+    }
     return res.json([]);
   }
 });
