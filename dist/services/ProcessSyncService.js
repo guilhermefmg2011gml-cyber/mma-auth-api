@@ -118,7 +118,9 @@ function ensureWatchLog(target, status, detalhes, inicio, fim) {
     db.prepare("INSERT INTO sync_logs (alvo, inicio, fim, status, detalhes) VALUES (?,?,?,?,?)").run(`${target.tipo}:${target.valor}`, inicio, fim, status, detalhes);
 }
 export async function runDailySync() {
-    const targets = db.prepare("SELECT id, tipo, valor, ativo FROM watch_targets WHERE ativo=1").all();
+    const targets = db
+        .prepare("SELECT id, tipo, valor, ativo FROM watch_targets WHERE ativo=1")
+        .all();
     for (const target of targets) {
         const inicio = new Date().toISOString();
         try {
@@ -128,7 +130,9 @@ export async function runDailySync() {
                     throw new Error(`Valor de alvo inválido: ${target.valor}`);
                 }
                 const processos = await searchProcessesByLawyer(parsed.nome, parsed.oab);
-                const lawyer = db.prepare("SELECT * FROM lawyers WHERE nome=?").get(parsed.nome.trim());
+                const lawyer = db
+                    .prepare("SELECT * FROM lawyers WHERE nome=?")
+                    .get(parsed.nome.trim());
                 const lawyersToAttach = lawyer ? [lawyer] : [];
                 for (const processo of processos) {
                     const caseId = await upsertCase(processo, "automatico");

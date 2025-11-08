@@ -17,7 +17,12 @@ router.get("/audit/latest", requirePermission("audit:read"), (_req, res) => {
         return res.json(rows);
     }
     catch (error) {
-        console.error("audit/latest error:", error.message);
+        if (error instanceof Error) {
+            console.error("audit/latest error:", error.message);
+        }
+        else {
+            console.error("audit/latest error:", error);
+        }
         return res.json([]);
     }
 });
@@ -46,7 +51,12 @@ router.get("/audit", requirePermission("audit:read"), (req, res) => {
         return res.json(rows);
     }
     catch (error) {
-        console.error("/audit error:", error.message);
+        if (error instanceof Error) {
+            console.error("/audit error:", error.message);
+        }
+        else {
+            console.error("/audit error:", error);
+        }
         return res.json([]);
     }
 });

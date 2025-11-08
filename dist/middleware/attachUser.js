@@ -31,7 +31,12 @@ export default function attachUser(req, res, next) {
         return next();
     }
     catch (error) {
-        console.error("attachUser error:", error.message);
+        if (error instanceof Error) {
+            console.error("attachUser error:", error.message);
+        }
+        else {
+            console.error("attachUser error:", error);
+        }
         return res.status(500).json({ error: "USER_LOOKUP_FAILED" });
     }
 }

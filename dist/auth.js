@@ -2,6 +2,10 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 const JWT_SECRET = process.env.JWT_SECRET ?? "secret";
+const TOKEN_EXPIRES_IN = (process.env.JWT_EXPIRES ?? "2h");
+const SIGN_OPTIONS = {
+    expiresIn: TOKEN_EXPIRES_IN,
+};
 export const hashPassword = (plain) => new Promise((resolve, reject) => {
     bcrypt.hash(plain, 10, (err, hash) => {
         if (err)
@@ -16,6 +20,4 @@ export const comparePassword = (plain, hash) => new Promise((resolve, reject) =>
         resolve(same);
     });
 });
-export const signToken = (payload) => jwt.sign(payload, JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES || "2h",
-});
+export const signToken = (payload) => jwt.sign(payload, JWT_SECRET, SIGN_OPTIONS);
