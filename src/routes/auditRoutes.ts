@@ -1,3 +1,4 @@
+import type { Request, Response } from "express";
 import { Router } from "express";
 import requireAuth from "../middleware/requireAuth.js";
 import attachUser from "../middleware/attachUser.js";
@@ -11,7 +12,7 @@ router.use(requireAuth, attachUser);
 router.get(
   "/audit/latest",
   requirePermission("audit:read"),
-  (_req, res) => {
+  (_req: Request, res: Response) => {
     try {
       const stmt = db.prepare(`
         SELECT id, created_at, user_email, action, entity, entity_id, diff_json, ip, ua
@@ -28,7 +29,7 @@ router.get(
   }
 );
 
-router.get("/audit", requirePermission("audit:read"), (req, res) => {
+router.get("/audit", requirePermission("audit:read"), (req: Request, res: Response) => {
   try {
     const { q = "", limit = 50, offset = 0 } = req.query;
     const safeLimit = Number.isFinite(Number(limit)) ? Math.min(Number(limit), 200) : 50;

@@ -1,21 +1,25 @@
-import express from "express";
+import type { Request, Response } from "express";
+import { Router } from "express";
 import { db } from "../db.js";
 import requireAuth from "../middleware/requireAuth.js";
-import attachUser from "../middleware/attachUser.js";
+import attachUser, { type AuthenticatedRequest } from "../middleware/attachUser.js";
 import requirePermission from "../middleware/requirePermission.js";
 import bcrypt from "bcryptjs";
 import { audit } from "../audit.js";
 
-const router = express.Router();
+const router = Router();
 
 router.use(requireAuth, attachUser, requirePermission("users:read"));
 
-router.get("/users", (_req, res) => {
+router.get("/users", (_req: Request, res: Response) => {
   const rows = db.prepare("SELECT id, email, role FROM users ORDER BY id DESC").all();
   res.json(rows);
 });
 
-router.post("/users", requirePermission("users:create"), (req, res) => {
+router.post("/users", requirePermission("users:create"), (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
   const { email, password, role = "colab" } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: "EMAIL_PASSWORD_REQUIRED" });
 
@@ -30,7 +34,7 @@ router.post("/users", requirePermission("users:create"), (req, res) => {
       entityId: info.lastInsertRowid,
       diff: { email, role },
       ip: req.ip,
-      ua: req.headers["user-agent"],
+      ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
     });
     res.status(201).json({ id: info.lastInsertRowid, email, role });
   } catch (e) {
@@ -39,18 +43,21 @@ router.post("/users", requirePermission("users:create"), (req, res) => {
   }
 });
 
-router.put("/users/:id", requirePermission("users:update"), (req, res) => {
+router.put("/users/:id", requirePermission("users:update"), (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
   const id = Number(req.params.id);
   const { email, password, role } = req.body || {};
   const user = db.prepare("SELECT * FROM users WHERE id=?").get(id);
   if (!user) return res.status(404).json({ error: "NOT_FOUND" });
 
-  const diff = {};
+  const diff: Record<string, unknown> = {};
   if (email && email !== user.email) diff.email = [user.email, email];
   if (role && role !== user.role) diff.role = [user.role, role];
 
-  const fields = [];
-  const values = [];
+  const fields: string[] = [];
+  const values: unknown[] = [];
   if (email) {
     fields.push("email=?");
     values.push(email);
@@ -78,13 +85,16 @@ router.put("/users/:id", requirePermission("users:update"), (req, res) => {
     entityId: id,
     diff,
     ip: req.ip,
-    ua: req.headers["user-agent"],
+    ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
   });
 
   res.json({ ok: true });
 });
 
-router.delete("/users/:id", requirePermission("users:delete"), (req, res) => {
+router.delete("/users/:id", requirePermission("users:delete"), (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
   const id = Number(req.params.id);
   const u = db.prepare("SELECT * FROM users WHERE id=?").get(id);
   if (!u) return res.status(404).json({ error: "NOT_FOUND" });
@@ -98,7 +108,7 @@ router.delete("/users/:id", requirePermission("users:delete"), (req, res) => {
     entityId: id,
     diff: { email: u.email },
     ip: req.ip,
-    ua: req.headers["user-agent"],
+    ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
   });
 
   res.json({ ok: true });

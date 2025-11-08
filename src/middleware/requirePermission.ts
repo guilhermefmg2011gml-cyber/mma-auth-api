@@ -1,5 +1,8 @@
-export default function requirePermission(perm) {
-  return (req, res, next) => {
+import type { NextFunction, Response } from "express";
+import type { AuthenticatedRequest } from "./attachUser.js";
+
+export default function requirePermission(perm: string) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): Response | void => {
     try {
       const role = req.user?.role;
       const perms = req.user?.permissions || [];

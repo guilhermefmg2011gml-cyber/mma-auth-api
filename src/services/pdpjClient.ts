@@ -1,4 +1,4 @@
-export function normalizeCNJ(value) {
+export function normalizeCNJ(value: string | number | null | undefined): string | null {
   if (value === undefined || value === null) return null;
   const digits = String(value).replace(/\D+/g, "");
   if (digits.length !== 20) return null;
