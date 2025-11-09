@@ -4,7 +4,8 @@ import cors from "cors";
 import authRoutes from "./routes/authRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import auditRoutes from "./routes/auditRoutes.js";
-import casesRoutes from "./routes/cases.js";
+import healthRoutes from "./routes/healthRoutes.js";
+import casesRoutes from "./routes/casesRoutes.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import "./cron.js";
 
@@ -35,7 +36,8 @@ app.use(
 
 app.use(express.json());
 
-app.get("/api/health", (_req, res) => res.send("OK"));
+
+app.use("/health", healthRoutes);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
