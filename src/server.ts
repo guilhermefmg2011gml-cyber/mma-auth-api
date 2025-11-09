@@ -6,6 +6,7 @@ import adminRoutes from "./routes/adminRoutes.js";
 import auditRoutes from "./routes/auditRoutes.js";
 import healthRoutes from "./routes/healthRoutes.js";
 import casesRoutes from "./routes/casesRoutes.js";
+import testRoutes from "./routes/testRoutes.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import "./cron.js";
 
@@ -43,6 +44,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api", auditRoutes);
 app.use("/api/cases", casesRoutes);
+app.use("/api/test", testRoutes);
 
 seedAdminIfEnabled().catch(console.error);
 
