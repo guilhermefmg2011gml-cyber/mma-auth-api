@@ -1,8 +1,38 @@
 import { Router } from "express";
 import db from "../db.js";
+import { searchProcessesByLawyer } from "../integrations/tavilyClient.js";
 import { createManualCase, runDailySync } from "../services/ProcessSyncService.js";
 
 const router = Router();
+
+// rota pública, sem verificação JWT
+router.get("/tavily", async (req, res) => {
+  try {
+    const rawName =
+      (typeof req.query.nome === "string" && req.query.nome.trim()) ||
+      (typeof req.query.name === "string" && req.query.name.trim()) ||
+      (typeof req.query.lawyer === "string" && req.query.lawyer.trim()) ||
+      "";
+    const rawOab =
+      (typeof req.query.oab === "string" && req.query.oab.trim()) ||
+      (typeof req.query.inscricao === "string" && req.query.inscricao.trim()) ||
+      (typeof req.query.registration === "string" && req.query.registration.trim()) ||
+      "";
+
+    if (!rawName || !rawOab) {
+      return res.status(400).json({
+        error: "PARAMETROS_OBRIGATORIOS",
+        required: ["nome", "oab"],
+      });
+    }
+
+    const processos = await searchProcessesByLawyer(rawName, rawOab);
+    return res.json(processos);
+  } catch (error) {
+    console.error("GET /api/cases/tavily error:", error);
+    return res.status(500).json({ error: "Erro ao consultar Tavily" });
+  }
+});
 
 /**
  * Lista todos os processos cadastrados
