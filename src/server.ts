@@ -7,6 +7,8 @@ import auditRoutes from "./routes/auditRoutes.js";
 import healthRoutes from "./routes/healthRoutes.js";
 import casesRoutes from "./routes/casesRoutes.js";
 import testRoutes from "./routes/test.routes.js";
+import requireAuth from "./middleware/requireAuth.js";
+import attachUser from "./middleware/attachUser.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import "./cron.js";
 
@@ -42,6 +44,10 @@ app.use("/health", healthRoutes);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/test", testRoutes);
+
+app.use(requireAuth);
+app.use(attachUser);
+
 app.use("/api/cases", casesRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api", auditRoutes);

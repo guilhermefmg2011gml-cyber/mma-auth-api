@@ -1,7 +1,10 @@
 import { Router } from "express";
 import db from "../db.js";
 import { searchProcessesByLawyer } from "../integrations/tavilyClient.js";
-import { createManualCase, runDailySync } from "../services/ProcessSyncService.js";
+import attachUser from "../middleware/attachUser.js";
+import requireAuth from "../middleware/requireAuth.js";
+import { createManualCase } from "../services/ProcessSyncService.js";
+import { syncCasesFromTavily } from "../services/casesSync.js";
 
 const router = Router();
 
@@ -127,15 +130,18 @@ router.get("/pending", async (_req, res) => {
 /**
  * Sincronização manual (botão “Sincronizar agora” no painel)
  */
-router.post("/sync/run", async (_req, res) => {
+router.post("/sync/run", requireAuth, attachUser, async (_req, res) => {
   try {
-    runDailySync().catch((error) => {
-      console.error("runDailySync async error:", error);
-    });
-    res.json({ ok: true, message: "Sincronização iniciada." });
+    const result = await syncCasesFromTavily();
+    return res.json(result);
   } catch (error) {
-    console.error("POST /api/cases/sync/run error:", error);
-    res.status(500).json({ error: "Erro ao iniciar sincronização" });
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("sync/run error:", message);
+    return res.status(500).json({
+      ok: false,
+      error: "SYNC_FAILED",
+      detail: message,
+    });
   }
 });
 
