@@ -18,6 +18,8 @@ const PERMS: Record<string, string[]> = {
     "users:update",
     "logs:read",
     "audit:read",
+    "cases:write",
+    "cases:sync",
   ],
   colab: [],
 };

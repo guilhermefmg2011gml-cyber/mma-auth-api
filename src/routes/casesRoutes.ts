@@ -3,6 +3,7 @@ import db from "../db.js";
 import { searchProcessesByLawyer } from "../integrations/tavilyClient.js";
 import attachUser from "../middleware/attachUser.js";
 import requireAuth from "../middleware/requireAuth.js";
+import requirePermission from "../middleware/requirePermission.js";
 import { createManualCase } from "../services/ProcessSyncService.js";
 import { syncCasesFromTavily } from "../services/casesSync.js";
 
@@ -37,6 +38,8 @@ router.get("/tavily", async (req, res) => {
   }
 });
 
+router.use(requireAuth, attachUser);
+
 /**
  * Lista todos os processos cadastrados
  */
@@ -58,7 +61,7 @@ router.get("/", async (_req, res) => {
 /**
  * Cadastro manual de processo
  */
-router.post("/", async (req, res) => {
+router.post("/", requirePermission("cases:write"), async (req, res) => {
   try {
     const rawNumero = req.body?.numero_cnj;
     const rawTribunal = req.body?.tribunal;
@@ -130,7 +133,7 @@ router.get("/pending", async (_req, res) => {
 /**
  * Sincronização manual (botão “Sincronizar agora” no painel)
  */
-router.post("/sync/run", requireAuth, attachUser, async (_req, res) => {
+router.post("/sync/run", requirePermission("cases:sync"), async (_req, res) => {
   try {
     const result = await syncCasesFromTavily();
     return res.json(result);
