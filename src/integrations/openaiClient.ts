@@ -3,7 +3,7 @@ import axios from "axios";
 const DEFAULT_OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_API_URL = process.env.OPENAI_API_URL || DEFAULT_OPENAI_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5o-mini";
 
 type ParteRole = "autor" | "reu" | "terceiro";
 
@@ -42,7 +42,10 @@ function buildPrompt(payload: GeneratePiecePayload): string {
     ? `Documentos relevantes: ${payload.documentos.join(", ")}.`
     : "Sem documentos anexados informados.";
 
-  const pedidosTexto = payload.pedidos ? `Pedidos sugeridos: ${payload.pedidos}.` : "";
+  const pedidosOrientacoes = payload.pedidos
+    ? `Orientações do cliente sobre pedidos: ${payload.pedidos}.`
+    :
+        "Pedidos específicos não foram informados; gere requerimentos finais coerentes com a narrativa e a fundamentação.";
 
   const blocos = payload.templateBlocos?.length
     ? payload.templateBlocos
@@ -61,10 +64,11 @@ function buildPrompt(payload: GeneratePiecePayload): string {
   return `Elabore uma peça processual do tipo ${payload.tipoPeca}, com linguagem jurídica técnica, clara e objetiva.\n\n` +
     `Considere o seguinte caso fático:\n${payload.resumoFatico}\n\n` +
     `Partes envolvidas:\n${partesLinha}\n\n` +
-    `${documentosTexto}\n${pedidosTexto}\n\n` +
+    `${documentosTexto}\n${pedidosOrientacoes}\n\n` +
     `Estruture a peça obedecendo aos blocos indicados abaixo, utilizando linguagem precisa e citações legais quando cabíveis:\n\n` +
     `${blocosTexto}\n\n` +
     `Inclua fundamentações jurídicas, artigos de lei e jurisprudências reais sempre que possível.\n` +
+    `No bloco destinado aos pedidos, produza requerimentos finais claros, coesos e juridicamente fundamentados, conectando-os aos fatos e à fundamentação desenvolvida.\n` +
     `A resposta deve trazer um texto base estruturado para validação humana.`;
 }
 
@@ -103,6 +107,82 @@ export async function generateLegalPiece(payload: GeneratePiecePayload): Promise
   const texto = data?.choices?.[0]?.message?.content;
   if (!texto || typeof texto !== "string") {
     throw new Error("Resposta inválida da OpenAI");
+  }
+
+  return texto.trim();
+}
+
+export interface GeneratePedidosPayload {
+  tipoPeca: string;
+  resumoFatico: string;
+  fundamentacao: string;
+  blocoTitulo: string;
+  orientacoes?: string;
+  contextoAtual?: string;
+}
+
+function buildPedidosPrompt(payload: GeneratePedidosPayload): string {
+  const orientacoesTexto = payload.orientacoes
+    ? `Orientações adicionais do cliente: ${payload.orientacoes}.`
+    : "Nenhuma orientação adicional específica foi fornecida.";
+
+  const contextoAtual = payload.contextoAtual?.trim()
+    ? `Conteúdo anteriormente sugerido para a seção:\n${payload.contextoAtual.trim()}\n\n`
+    : "";
+
+  const fundamentacao = payload.fundamentacao.trim()
+    ? payload.fundamentacao.trim()
+    : "(A fundamentação jurídica ainda não está detalhada. Utilize os fatos para sustentar os pedidos.)";
+
+  return (
+    `Você é um advogado brasileiro elaborando requerimentos finais para uma peça processual do tipo ${payload.tipoPeca}.\n` +
+    `Resumo fático relevante:\n${payload.resumoFatico}\n\n` +
+    `Principais fundamentos jurídicos já redigidos:\n${fundamentacao}\n\n` +
+    `${orientacoesTexto}\n` +
+    `${contextoAtual}` +
+    `Redija a seção "${payload.blocoTitulo}" com pedidos finais claros, numerados ou em tópicos, mantendo estilo jurídico técnico, coeso e alinhado aos fundamentos expostos.\n` +
+    `Conecte cada pedido aos fatos narrados e à fundamentação apresentada, evitando repetições desnecessárias.\n` +
+    `Retorne apenas o conteúdo da seção, sem repetir o título.`
+  );
+}
+
+export async function generateSmartPedidos(
+  payload: GeneratePedidosPayload
+): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY não configurada");
+  }
+
+  const prompt = buildPedidosPrompt(payload);
+
+  const { data } = await axios.post(
+    OPENAI_API_URL,
+    {
+      model: OPENAI_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "Você é um advogado especialista na redação de pedidos finais em peças judiciais brasileiras.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.2,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 60000,
+    }
+  );
+
+  const texto = data?.choices?.[0]?.message?.content;
+  if (!texto || typeof texto !== "string") {
+    throw new Error("Resposta inválida da OpenAI ao gerar pedidos inteligentes");
   }
 
   return texto.trim();

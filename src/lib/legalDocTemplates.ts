@@ -60,7 +60,7 @@ export const LEGAL_DOC_TEMPLATES: Record<TipoPeca, LegalDocTemplate> = {
       "fundamentacao_juridica",
       "pedidos_antecipatorios",
     ],
-    camposObrigatorios: ["partes", "resumoFatico", "pedidos"],
+    camposObrigatorios: ["partes", "resumoFatico"],
   },
   agravo_instrumento: {
     blocos: [
@@ -94,7 +94,7 @@ export const LEGAL_DOC_TEMPLATES: Record<TipoPeca, LegalDocTemplate> = {
   },
   interlocutoria: {
     blocos: ["preambulo", "fundamentacao", "pedido"],
-    camposObrigatorios: ["resumoFatico", "pedidos"],
+    camposObrigatorios: ["resumoFatico"],
   },
   manifestacao: {
     blocos: ["preambulo", "resposta_argumentos", "fundamentacao", "conclusao"],

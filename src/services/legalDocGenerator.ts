@@ -3,13 +3,19 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { generateLegalPiece, type GeneratePiecePayload, type PartePayload } from "../integrations/openaiClient.js";
+import {
+  generateLegalPiece,
+  generateSmartPedidos,
+  type GeneratePiecePayload,
+  type PartePayload,
+} from "../integrations/openaiClient.js";
 import { searchLegalInsights, type TavilyLegalResearchResult } from "../integrations/tavilyClient.js";
 import {
   TIPOS_PECA,
   getTemplate,
   type CamposObrigatorios,
   type TipoPeca,
+  type LegalDocTemplate,
 } from "../lib/legalDocTemplates.js";
 
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
@@ -82,13 +88,6 @@ export function validateRequiredFields(
         missing.push(campo);
       }
     }
-
-    if (campo === "pedidos") {
-      const pedidos = typeof input.pedidos === "string" ? input.pedidos.trim() : "";
-      if (!pedidos) {
-        missing.push(campo);
-      }
-    }
   }
 
   return missing;
@@ -103,11 +102,13 @@ export async function generateLegalDocument(
   }
 
   const template = getTemplate(input.tipoPeca);
-  const texto = await generateLegalPiece({
+  const textoBase = await generateLegalPiece({
     ...input,
     tipoPeca: input.tipoPeca,
     templateBlocos: template.blocos,
   });
+
+  const textoComPedidos = await ensureIntelligentPedidos(textoBase, input, template);
 
   let jurisprudencias: TavilyLegalResearchResult[] = [];
   const resumoPreview = input.resumoFatico.slice(0, 160);
@@ -119,9 +120,9 @@ export async function generateLegalDocument(
     console.warn("[legalDocGenerator] falha ao buscar jurisprudências", error);
   }
 
-  const artigos = extractLawArticles(texto);
+  const artigos = extractLawArticles(textoComPedidos);
   const artigosValidados = await verifyLawArticles(artigos);
-  const textoAnotado = annotateArticlesInText(texto, artigosValidados);
+  const textoAnotado = annotateArticlesInText(textoComPedidos, artigosValidados);
 
   return {
     texto: textoAnotado,
@@ -146,6 +147,188 @@ export function getGeneratedPiece(id: string): StoredLegalPiece | undefined {
 
 function normalizeArticleKey(value: string): string {
   return value.replace(/[.\s]/g, "").toLowerCase();
+}
+
+function normalizeHeadingKey(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+}
+
+interface ParsedSection {
+  heading: string;
+  headingLineIndex: number;
+  blockName?: string;
+  contentStart: number;
+  contentEnd: number;
+}
+
+function stripHeadingPrefix(value: string): string {
+  return value.replace(/^#{1,6}\s*/, "").trim();
+}
+
+function mapSectionsToTemplate(
+  texto: string,
+  template: LegalDocTemplate
+): { sections: ParsedSection[]; lines: string[]; byBlock: Map<string, ParsedSection> } {
+  const lines = texto.split(/\r?\n/);
+  const sections: ParsedSection[] = [];
+  const byBlock = new Map<string, ParsedSection>();
+
+  const normalizedBlocks = new Map<string, string>();
+  for (const block of template.blocos) {
+    const heading = formatTitle(block);
+    normalizedBlocks.set(normalizeHeadingKey(heading), block);
+  }
+
+  let current: ParsedSection | null = null;
+
+  for (let index = 0; index < lines.length; index++) {
+    const trimmed = lines[index].trim();
+    if (!/^#{2,6}\s+/.test(trimmed)) {
+      continue;
+    }
+
+    if (current) {
+      current.contentEnd = index;
+      sections.push(current);
+      if (current.blockName) {
+        byBlock.set(current.blockName, current);
+      }
+    }
+
+    const headingText = stripHeadingPrefix(trimmed);
+    const blockName = normalizedBlocks.get(normalizeHeadingKey(headingText));
+
+    current = {
+      heading: headingText,
+      headingLineIndex: index,
+      blockName,
+      contentStart: index + 1,
+      contentEnd: lines.length,
+    };
+  }
+
+  if (current) {
+    current.contentEnd = lines.length;
+    sections.push(current);
+    if (current.blockName) {
+      byBlock.set(current.blockName, current);
+    }
+  }
+
+  return { sections, lines, byBlock };
+}
+
+function getSectionContent(lines: string[], section: ParsedSection): string {
+  if (section.contentStart >= section.contentEnd) {
+    return "";
+  }
+  return lines.slice(section.contentStart, section.contentEnd).join("\n").trim();
+}
+
+function sanitizeGeneratedPedidos(value: string): string {
+  if (!value) {
+    return "";
+  }
+
+  let sanitized = value.trim();
+  if (/^#{1,6}\s+/.test(sanitized)) {
+    sanitized = sanitized.replace(/^#{1,6}\s+.*?(?:\n|$)/, "").trim();
+  }
+  return sanitized;
+}
+
+async function ensureIntelligentPedidos(
+  texto: string,
+  input: GenerateLegalDocumentInput,
+  template: LegalDocTemplate
+): Promise<string> {
+  const blocksComPedidos = template.blocos.filter((bloco) => /pedido|requer/i.test(bloco));
+  if (!blocksComPedidos.length) {
+    return texto;
+  }
+
+  const { lines, byBlock } = mapSectionsToTemplate(texto, template);
+  if (!byBlock.size) {
+    return texto;
+  }
+
+  const fundamentacaoBlocks = template.blocos.filter((bloco) =>
+    /fundament|teses_defendidas|fundamento_tecnico|reforma_pleiteada/i.test(bloco)
+  );
+
+  const fundamentacaoTrechos = fundamentacaoBlocks
+    .map((bloco) => {
+      const section = byBlock.get(bloco);
+      if (!section) return "";
+      return getSectionContent(lines, section);
+    })
+    .filter((conteudo) => Boolean(conteudo?.trim()));
+
+  const fundamentacaoTexto = fundamentacaoTrechos.join("\n\n");
+  const orientacoes = typeof input.pedidos === "string" && input.pedidos.trim()
+    ? input.pedidos.trim()
+    : undefined;
+
+  const replacements: { section: ParsedSection; lines: string[] }[] = [];
+
+  for (const bloco of blocksComPedidos) {
+    const section = byBlock.get(bloco);
+    if (!section) {
+      continue;
+    }
+
+    const blocoTitulo = formatTitle(bloco);
+    const contextoAtual = getSectionContent(lines, section);
+
+    try {
+      const pedidos = await generateSmartPedidos({
+        tipoPeca: input.tipoPeca,
+        resumoFatico: input.resumoFatico,
+        fundamentacao: fundamentacaoTexto || contextoAtual,
+        blocoTitulo,
+        orientacoes,
+        contextoAtual,
+      });
+
+      const sanitized = sanitizeGeneratedPedidos(pedidos);
+      if (!sanitized) {
+        continue;
+      }
+
+      const novasLinhas = sanitized
+        .split(/\r?\n/)
+        .map((linha) => linha.replace(/\s+$/, ""));
+
+      replacements.push({ section, lines: novasLinhas });
+    } catch (error) {
+      console.warn(
+        `[legalDocGenerator] falha ao gerar pedidos inteligentes para ${bloco}`,
+        error
+      );
+    }
+  }
+
+  if (!replacements.length) {
+    return texto;
+  }
+
+  replacements.sort((a, b) => b.section.contentStart - a.section.contentStart);
+
+  const updatedLines = [...lines];
+  for (const replacement of replacements) {
+    const inicio = replacement.section.contentStart;
+    const tamanho = Math.max(replacement.section.contentEnd - replacement.section.contentStart, 0);
+    const linhasParaInserir = replacement.lines.length ? replacement.lines : [""];
+    updatedLines.splice(inicio, tamanho, ...linhasParaInserir);
+  }
+
+  return updatedLines.join("\n");
 }
 
 function extractLawArticles(texto: string): string[] {
