@@ -46,6 +46,8 @@ db.exec(`
     origem TEXT NOT NULL CHECK(origem IN ('automatico', 'manual')),
     criado_em TEXT NOT NULL DEFAULT (datetime('now')),
     atualizado_em TEXT NOT NULL DEFAULT (datetime('now')),
+    url TEXT,
+    last_sync_at TEXT,
     UNIQUE(numero_cnj, tribunal)
   );
 

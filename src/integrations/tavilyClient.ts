@@ -178,7 +178,11 @@ function extractResults(data: TavilySearchResponse): TavilyResultItem[] {
   return [];
 }
 
-async function performSearch(query: string, maxResults: number): Promise<TavilyResultItem[]> {
+async function performSearch(
+  query: string,
+  maxResults: number,
+  includeDomains?: string[]
+): Promise<TavilyResultItem[]> {
   if (!TAVILY_API_KEY) {
     console.warn("[tavily] API key not configured; returning empty result set");
     return [];
@@ -190,6 +194,7 @@ async function performSearch(query: string, maxResults: number): Promise<TavilyR
       api_key: TAVILY_API_KEY,
       query,
       max_results: maxResults,
+      ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {}),
     },
     {
       headers: {
@@ -234,4 +239,27 @@ export async function searchMovementsByCase(numero_cnj: string, tribunal: string
       const signature = `${movement.data}|${movement.descricao}`;
       return index === self.findIndex((other) => `${other.data}|${other.descricao}` === signature);
     });
+}
+
+export interface TavilyLegalResearchResult {
+  title?: string;
+  snippet?: string;
+  content?: string;
+  url?: string;
+  publishedAt?: string;
+}
+
+export async function searchLegalInsights(
+  query: string,
+  includeDomains?: string[],
+  maxResults = 5
+): Promise<TavilyLegalResearchResult[]> {
+  const items = await performSearch(query, maxResults, includeDomains);
+  return items.map((item) => ({
+    title: item.title,
+    snippet: item.snippet,
+    content: item.content,
+    url: item.url,
+    publishedAt: item.published_date,
+  }));
 }

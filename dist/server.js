@@ -4,9 +4,13 @@ import cors from "cors";
 import authRoutes from "./routes/authRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import auditRoutes from "./routes/auditRoutes.js";
-import casesRoutes from "./routes/cases.js";
+import healthRoutes from "./routes/healthRoutes.js";
+import testRoutes from "./routes/test.routes.js";
+import requireAuth from "./middleware/requireAuth.js";
+import attachUser from "./middleware/attachUser.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import "./cron.js";
+import casesRoutes from "./routes/casesRoutes.js";
 const app = express();
 const DEFAULT_ALLOWED_ORIGINS = [
     "https://mouramartinsadvogados.com.br",
@@ -25,11 +29,14 @@ app.use(cors({
     credentials: true,
 }));
 app.use(express.json());
-app.get("/api/health", (_req, res) => res.send("OK"));
+app.use("/health", healthRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/test", testRoutes);
+app.use("/api/cases", casesRoutes);
+app.use(requireAuth);
+app.use(attachUser);
 app.use("/api/admin", adminRoutes);
 app.use("/api", auditRoutes);
-app.use("/api/cases", casesRoutes);
 seedAdminIfEnabled().catch(console.error);
 const PORT = Number(process.env.PORT || 8080);
 app.listen(PORT, () => console.log(`API on :${PORT} (origins: ${ALLOWED_ORIGINS.join(", ")})`));
