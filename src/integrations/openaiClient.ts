@@ -20,6 +20,14 @@ export interface GeneratePiecePayload {
   pedidos?: string | null;
   documentos?: string[];
   clienteId?: string | null;
+  templateBlocos?: string[];
+}
+
+function formatBlockTitle(block: string): string {
+  return block
+    .split(/[_\s]+/)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function buildPrompt(payload: GeneratePiecePayload): string {
@@ -36,16 +44,27 @@ function buildPrompt(payload: GeneratePiecePayload): string {
 
   const pedidosTexto = payload.pedidos ? `Pedidos sugeridos: ${payload.pedidos}.` : "";
 
+  const blocos = payload.templateBlocos?.length
+    ? payload.templateBlocos
+    : [
+        "preambulo",
+        "dos_fatos",
+        "fundamentacao_juridica",
+        "jurisprudencia",
+        "dos_pedidos",
+      ];
+
+  const blocosTexto = blocos
+    .map((bloco) => `### ${formatBlockTitle(bloco)}\n(Desenvolva este tópico conforme aplicável ao tipo da peça.)`)
+    .join("\n\n");
+
   return `Elabore uma peça processual do tipo ${payload.tipoPeca}, com linguagem jurídica técnica, clara e objetiva.\n\n` +
     `Considere o seguinte caso fático:\n${payload.resumoFatico}\n\n` +
     `Partes envolvidas:\n${partesLinha}\n\n` +
     `${documentosTexto}\n${pedidosTexto}\n\n` +
-    `Organize a peça, se aplicável, nos seguintes tópicos:\n` +
-    `- Preâmbulo\n` +
-    `- Dos Fatos\n` +
-    `- Da Fundamentação Jurídica (com artigos de lei citados explicitamente)\n` +
-    `- Da Jurisprudência\n` +
-    `- Dos Pedidos\n\n` +
+    `Estruture a peça obedecendo aos blocos indicados abaixo, utilizando linguagem precisa e citações legais quando cabíveis:\n\n` +
+    `${blocosTexto}\n\n` +
+    `Inclua fundamentações jurídicas, artigos de lei e jurisprudências reais sempre que possível.\n` +
     `A resposta deve trazer um texto base estruturado para validação humana.`;
 }
 

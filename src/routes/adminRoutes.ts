@@ -8,30 +8,20 @@ import bcrypt from "bcryptjs";
 import { audit } from "../audit.js";
 import { v4 as uuidv4 } from "uuid";
 import {
+  TIPOS_PECA,
+  buildDocxFromPiece,
   generateLegalDocument,
+  getGeneratedPiece,
+  storeGeneratedPiece,
   type GenerateLegalDocumentInput,
   type ParteData,
   type TipoPeca,
+  MissingRequiredFieldsError,
 } from "../services/legalDocGenerator.js";
 
 const router = Router();
 
 router.use(requireAuth, attachUser, requirePermission("users:read"));
-
-const TIPOS_PECA: readonly TipoPeca[] = [
-  "peticao_inicial",
-  "contestacao",
-  "replica",
-  "agravo_instrumento",
-  "pedido_saneamento",
-  "producao_provas",
-  "interlocutoria",
-  "manifestacao",
-  "quesitos",
-  "memoriais",
-  "apelacao",
-  "tutela_urgencia",
-];
 
 const TIPO_PECA_SET = new Set<string>(TIPOS_PECA);
 
@@ -204,23 +194,15 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
       return res.status(400).json({ error: "TIPO_PECA_INVALIDO" });
     }
 
-    const resumoFatico = sanitizeText(body.resumo_fatico);
-    if (!resumoFatico) {
-      return res.status(400).json({ error: "RESUMO_OBRIGATORIO" });
-    }
-
     const partes = parsePartes(body.partes);
-    if (!partes.length) {
-      return res.status(400).json({ error: "PARTES_INVALIDAS" });
-    }
-
+    
     const pedidos = sanitizeText(body.pedidos);
     const documentos = normalizeDocumentList(body.documentos);
     const clienteId = sanitizeText(body.cliente_id);
 
     const payload: GenerateLegalDocumentInput = {
       tipoPeca: tipoPecaRaw as TipoPeca,
-      resumoFatico,
+      resumoFatico: sanitizeText(body.resumo_fatico) ?? "",
       partes,
     };
 
@@ -238,6 +220,12 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
 
     const resultado = await generateLegalDocument(payload);
     const id = uuidv4();
+
+    storeGeneratedPiece(id, {
+      tipo: payload.tipoPeca,
+      texto: resultado.texto,
+      createdAt: new Date(),
+    });
 
     audit({
       byUserId: req.user.id,
@@ -267,9 +255,48 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
       })),
     });
   } catch (error) {
+    if (error instanceof MissingRequiredFieldsError) {
+      return res.status(422).json({
+        error: "CAMPOS_OBRIGATORIOS",
+        campos: error.campos,
+        message: error.message,
+      });
+    }
+
     console.error("[adminRoutes] falha ao gerar peça", error);
     const message = error instanceof Error ? error.message : "ERRO_INTERNO";
     return res.status(500).json({ error: "ERRO_GERACAO_PECA", message });
+  }
+});
+
+router.get("/ai/gerador-pecas/:id/exportar", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
+  }
+
+  const { id } = req.params;
+  if (!id) {
+    return res.status(400).json({ error: "ID_OBRIGATORIO" });
+  }
+
+  const piece = getGeneratedPiece(id);
+  if (!piece) {
+    return res.status(404).json({ error: "PECA_NAO_ENCONTRADA" });
+  }
+
+  try {
+    const buffer = await buildDocxFromPiece(piece);
+    const filename = `peca_${id}.docx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (error) {
+    console.error("[adminRoutes] falha ao exportar peça", error);
+    return res.status(500).json({ error: "ERRO_EXPORTAR_PECA" });
   }
 });
 
