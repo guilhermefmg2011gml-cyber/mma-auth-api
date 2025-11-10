@@ -11,6 +11,7 @@ import attachUser from "./middleware/attachUser.js";
 import { seedAdminIfEnabled } from "./seed.js";
 import "./cron.js";
 import casesRoutes from "./routes/casesRoutes.js";
+import legalDocPublicRoutes from "./routes/legalDocPublicRoutes.js";
 const app = express();
 const DEFAULT_ALLOWED_ORIGINS = [
     "https://mouramartinsadvogados.com.br",
@@ -33,6 +34,7 @@ app.use("/health", healthRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/test", testRoutes);
 app.use("/api/cases", casesRoutes);
+app.use("/peca", legalDocPublicRoutes);
 app.use(requireAuth);
 app.use(attachUser);
 app.use("/api/admin", adminRoutes);

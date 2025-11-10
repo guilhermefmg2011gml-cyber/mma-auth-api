@@ -5,6 +5,9 @@ import attachUser from "../middleware/attachUser.js";
 import requirePermission from "../middleware/requirePermission.js";
 import bcrypt from "bcryptjs";
 import { audit } from "../audit.js";
+import { v4 as uuidv4 } from "uuid";
+import { buildDocxFromPiece, generateLegalDocument, getGeneratedPiece, storeGeneratedPiece, MissingRequiredFieldsError, } from "../services/legalDocGenerator.js";
+import { normalizeDocumentList, parsePartes, parseTipoPeca, sanitizeText, } from "./utils/legalDocRequest.js";
 const router = Router();
 router.use(requireAuth, attachUser, requirePermission("users:read"));
 router.get("/users", (_req, res) => {
@@ -105,5 +108,110 @@ router.delete("/users/:id", requirePermission("users:delete"), (req, res) => {
         ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
     });
     res.json({ ok: true });
+});
+router.post("/ai/gerador-pecas", async (req, res) => {
+    if (!req.user) {
+        return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    try {
+        const body = req.body ?? {};
+        const tipoPeca = parseTipoPeca(body.tipo_peca);
+        if (!tipoPeca) {
+            return res.status(400).json({ error: "TIPO_PECA_INVALIDO" });
+        }
+        const partes = parsePartes(body.partes);
+        const pedidos = sanitizeText(body.pedidos);
+        const documentos = normalizeDocumentList(body.documentos);
+        const clienteId = sanitizeText(body.cliente_id);
+        const payload = {
+            tipoPeca,
+            resumoFatico: sanitizeText(body.resumo_fatico) ?? "",
+            partes,
+        };
+        if (pedidos) {
+            payload.pedidos = pedidos;
+        }
+        if (documentos) {
+            payload.documentos = documentos;
+        }
+        if (clienteId) {
+            payload.clienteId = clienteId;
+        }
+        const resultado = await generateLegalDocument(payload);
+        const id = uuidv4();
+        storeGeneratedPiece(id, {
+            tipo: payload.tipoPeca,
+            texto: resultado.texto,
+            createdAt: new Date(),
+            artigos: resultado.artigos,
+        });
+        audit({
+            byUserId: req.user.id,
+            byUserEmail: req.user.email,
+            action: "ai:generate_piece",
+            entity: "ai_generator",
+            entityId: null,
+            diff: {
+                id,
+                tipo: payload.tipoPeca,
+                partes: partes.map((parte) => `${parte.papel}:${parte.nome}`),
+                clienteId: payload.clienteId ?? null,
+            },
+            ip: req.ip,
+            ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
+        });
+        return res.json({
+            id,
+            tipo: payload.tipoPeca,
+            textoGerado: resultado.texto,
+            jurisprudenciasSugeridas: resultado.jurisprudencias.map((item) => ({
+                titulo: item.title ?? null,
+                resumo: item.snippet ?? item.content ?? null,
+                url: item.url ?? null,
+                publicadoEm: item.publishedAt ?? null,
+            })),
+            artigosValidados: resultado.artigos.map((item) => ({
+                artigo: item.artigo,
+                confirmado: item.confirmado,
+                referencia: item.referencia ?? null,
+            })),
+        });
+    }
+    catch (error) {
+        if (error instanceof MissingRequiredFieldsError) {
+            return res.status(422).json({
+                error: "CAMPOS_OBRIGATORIOS",
+                campos: error.campos,
+                message: error.message,
+            });
+        }
+        console.error("[adminRoutes] falha ao gerar peça", error);
+        const message = error instanceof Error ? error.message : "ERRO_INTERNO";
+        return res.status(500).json({ error: "ERRO_GERACAO_PECA", message });
+    }
+});
+router.get("/ai/gerador-pecas/:id/exportar", async (req, res) => {
+    if (!req.user) {
+        return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    const { id } = req.params;
+    if (!id) {
+        return res.status(400).json({ error: "ID_OBRIGATORIO" });
+    }
+    const piece = getGeneratedPiece(id);
+    if (!piece) {
+        return res.status(404).json({ error: "PECA_NAO_ENCONTRADA" });
+    }
+    try {
+        const buffer = await buildDocxFromPiece(piece);
+        const filename = `peca_${id}.docx`;
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+        return res.send(buffer);
+    }
+    catch (error) {
+        console.error("[adminRoutes] falha ao exportar peça", error);
+        return res.status(500).json({ error: "ERRO_EXPORTAR_PECA" });
+    }
 });
 export default router;

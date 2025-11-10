@@ -132,7 +132,7 @@ function extractResults(data) {
     }
     return [];
 }
-async function performSearch(query, maxResults) {
+async function performSearch(query, maxResults, includeDomains) {
     if (!TAVILY_API_KEY) {
         console.warn("[tavily] API key not configured; returning empty result set");
         return [];
@@ -141,6 +141,7 @@ async function performSearch(query, maxResults) {
         api_key: TAVILY_API_KEY,
         query,
         max_results: maxResults,
+        ...(includeDomains && includeDomains.length ? { include_domains: includeDomains } : {}),
     }, {
         headers: {
             "Content-Type": "application/json",
@@ -176,4 +177,14 @@ export async function searchMovementsByCase(numero_cnj, tribunal) {
         const signature = `${movement.data}|${movement.descricao}`;
         return index === self.findIndex((other) => `${other.data}|${other.descricao}` === signature);
     });
+}
+export async function searchLegalInsights(query, includeDomains, maxResults = 5) {
+    const items = await performSearch(query, maxResults, includeDomains);
+    return items.map((item) => ({
+        title: item.title,
+        snippet: item.snippet,
+        content: item.content,
+        url: item.url,
+        publishedAt: item.published_date,
+    }));
 }

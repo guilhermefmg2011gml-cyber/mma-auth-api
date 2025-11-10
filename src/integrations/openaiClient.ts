@@ -3,7 +3,7 @@ import axios from "axios";
 const DEFAULT_OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_API_URL = process.env.OPENAI_API_URL || DEFAULT_OPENAI_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 type ParteRole = "autor" | "reu" | "terceiro";
 
