@@ -225,6 +225,7 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
       tipo: payload.tipoPeca,
       texto: resultado.texto,
       createdAt: new Date(),
+      artigos: resultado.artigos,
     });
 
     audit({
@@ -252,6 +253,11 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
         resumo: item.snippet ?? item.content ?? null,
         url: item.url ?? null,
         publicadoEm: item.publishedAt ?? null,
+      })),
+      artigosValidados: resultado.artigos.map((item) => ({
+        artigo: item.artigo,
+        confirmado: item.confirmado,
+        referencia: item.referencia ?? null,
       })),
     });
   } catch (error) {

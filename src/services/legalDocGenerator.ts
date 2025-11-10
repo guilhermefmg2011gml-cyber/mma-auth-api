@@ -13,14 +13,24 @@ import {
 } from "../lib/legalDocTemplates.js";
 
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
+const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
+const ARTICLE_REGEX = /Art\.?\s?\d{1,4}[ºo]?(?:,?\s?§\s?\d+)?/gi;
+const ARTICLE_QUERY_SUFFIX = "CPC validade e aplicação";
 
 const execFileAsync = promisify(execFile);
+
+export interface ArticleValidation {
+  artigo: string;
+  confirmado: boolean;
+  referencia?: string | null;
+}
 
 interface StoredLegalPiece {
   id: string;
   tipo: TipoPeca;
   texto: string;
   createdAt: Date;
+  artigos?: ArticleValidation[];
 }
 
 const PIECE_MEMORY = new Map<string, StoredLegalPiece>();
@@ -52,6 +62,7 @@ export interface GenerateLegalDocumentInput extends Omit<GeneratePiecePayload, "
 export interface LegalDocumentResult {
   texto: string;
   jurisprudencias: TavilyLegalResearchResult[];
+  artigos: ArticleValidation[];
 }
 
 export function validateRequiredFields(
@@ -108,9 +119,14 @@ export async function generateLegalDocument(
     console.warn("[legalDocGenerator] falha ao buscar jurisprudências", error);
   }
 
+  const artigos = extractLawArticles(texto);
+  const artigosValidados = await verifyLawArticles(artigos);
+  const textoAnotado = annotateArticlesInText(texto, artigosValidados);
+
   return {
-    texto,
+    texto: textoAnotado,
     jurisprudencias: jurisprudencias.slice(0, 3),
+    artigos: artigosValidados,
   };
 }
 
@@ -120,11 +136,100 @@ export function storeGeneratedPiece(id: string, data: Omit<StoredLegalPiece, "id
     tipo: data.tipo,
     texto: data.texto,
     createdAt: data.createdAt,
+    artigos: data.artigos,
   });
 }
 
 export function getGeneratedPiece(id: string): StoredLegalPiece | undefined {
   return PIECE_MEMORY.get(id);
+}
+
+function normalizeArticleKey(value: string): string {
+  return value.replace(/[.\s]/g, "").toLowerCase();
+}
+
+function extractLawArticles(texto: string): string[] {
+  if (!texto) {
+    return [];
+  }
+
+  const matches = texto.match(ARTICLE_REGEX);
+  if (!matches) {
+    return [];
+  }
+
+  const artigos: string[] = [];
+  const vistos = new Set<string>();
+
+  for (const match of matches) {
+    const artigo = match.trim();
+    const chave = normalizeArticleKey(artigo);
+    if (!vistos.has(chave)) {
+      vistos.add(chave);
+      artigos.push(artigo);
+    }
+  }
+
+  return artigos;
+}
+
+async function verifyLawArticles(artigos: string[]): Promise<ArticleValidation[]> {
+  if (!artigos.length) {
+    return [];
+  }
+
+  const verificacoes = artigos.map(async (artigo) => {
+    try {
+      const query = `${artigo} ${ARTICLE_QUERY_SUFFIX}`.trim();
+      const resultados = await searchLegalInsights(
+        query,
+        ARTICLE_VERIFICATION_DOMAINS,
+        4
+      );
+      const referencia = resultados[0]?.url ?? null;
+      const validacao: ArticleValidation = {
+        artigo,
+        confirmado: resultados.length > 0,
+        referencia,
+      };
+      return validacao;
+    } catch (error) {
+      console.warn(`[legalDocGenerator] falha ao verificar artigo ${artigo}`, error);
+      const fallback: ArticleValidation = {
+        artigo,
+        confirmado: false,
+        referencia: null,
+      };
+      return fallback;
+    }
+  });
+
+  return Promise.all(verificacoes);
+}
+
+function annotateArticlesInText(
+  texto: string,
+  validacoes: ArticleValidation[]
+): string {
+  if (!texto || !validacoes.length) {
+    return texto;
+  }
+
+  const mapa = new Map<string, ArticleValidation>();
+  for (const validacao of validacoes) {
+    mapa.set(normalizeArticleKey(validacao.artigo), validacao);
+  }
+
+  return texto.replace(ARTICLE_REGEX, (match) => {
+    const chave = normalizeArticleKey(match);
+    const info = mapa.get(chave);
+    if (!info) {
+      return match;
+    }
+
+    const marcador = info.confirmado ? "✔️ Confirmado" : "⚠️ Não confirmado";
+    return `${match} [${marcador}]`;
+  });
 }
 
 function escapeXml(value: string): string {
@@ -164,9 +269,21 @@ function buildDocumentXml(piece: StoredLegalPiece): string {
   const titulo = `Peça: ${formatTitle(piece.tipo.replace(/_/g, " "))}`;
   const geradoEm = `Gerado em ${piece.createdAt.toLocaleString("pt-BR")}`;
 
+  const institutionalHeader = [
+    `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr><w:t>${escapeXml(
+      "MOURA MARTINS ADVOGADOS"
+    )}</w:t></w:r></w:p>`,
+    `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>${escapeXml(
+      "OAB/GO • mouramartinsadvogados.com.br"
+    )}</w:t></w:r></w:p>`,
+    '<w:p><w:r><w:t xml:space="preserve"> </w:t></w:r></w:p>',
+  ];
+
   const header = [
+    ...institutionalHeader,
     `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${escapeXml(titulo)}</w:t></w:r></w:p>`,
     `<w:p><w:r><w:t>${escapeXml(geradoEm)}</w:t></w:r></w:p>`,
+    '<w:p><w:r><w:t xml:space="preserve"> </w:t></w:r></w:p>',
   ];
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n` +
