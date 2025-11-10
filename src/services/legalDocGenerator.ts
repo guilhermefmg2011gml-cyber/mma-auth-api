@@ -88,6 +88,13 @@ export function validateRequiredFields(
         missing.push(campo);
       }
     }
+
+    if (campo === "pedidos") {
+      const pedidos = typeof input.pedidos === "string" ? input.pedidos.trim() : "";
+      if (!pedidos) {
+        missing.push(campo);
+      }
+    }
   }
 
   return missing;
