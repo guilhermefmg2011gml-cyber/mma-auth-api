@@ -1,4 +1,8 @@
-import "dotenv/config";
+import path from "node:path";
+import { config as loadEnv } from "dotenv";
+
+loadEnv({ path: path.resolve(process.cwd(), ".env.local"), override: false });
+loadEnv();
 import express from "express";
 import cors from "cors";
 import authRoutes from "./routes/authRoutes.js";
