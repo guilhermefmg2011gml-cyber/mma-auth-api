@@ -8,76 +8,24 @@ import bcrypt from "bcryptjs";
 import { audit } from "../audit.js";
 import { v4 as uuidv4 } from "uuid";
 import {
-  TIPOS_PECA,
   buildDocxFromPiece,
   generateLegalDocument,
   getGeneratedPiece,
   storeGeneratedPiece,
   type GenerateLegalDocumentInput,
-  type ParteData,
   type TipoPeca,
   MissingRequiredFieldsError,
 } from "../services/legalDocGenerator.js";
+import {
+  normalizeDocumentList,
+  parsePartes,
+  parseTipoPeca,
+  sanitizeText,
+} from "./utils/legalDocRequest.js";
 
 const router = Router();
 
 router.use(requireAuth, attachUser, requirePermission("users:read"));
-
-const TIPO_PECA_SET = new Set<string>(TIPOS_PECA);
-
-function sanitizeText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function parsePartes(raw: unknown): ParteData[] {
-  if (!Array.isArray(raw)) return [];
-  const partes: ParteData[] = [];
-
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const nome = sanitizeText((item as Record<string, unknown>).nome);
-    const papelRaw = sanitizeText((item as Record<string, unknown>).papel) as ParteData["papel"] | null;
-    const qualificacao = sanitizeText((item as Record<string, unknown>).qualificacao);
-
-    if (!nome) continue;
-    if (papelRaw !== "autor" && papelRaw !== "reu" && papelRaw !== "terceiro") continue;
-
-    const parte: ParteData = {
-      nome,
-      papel: papelRaw,
-    };
-
-    if (qualificacao) {
-      parte.qualificacao = qualificacao;
-    }
-
-    partes.push(parte);
-  }
-
-  return partes;
-}
-
-function normalizeDocumentList(raw: unknown): string[] | undefined {
-  if (!raw) return undefined;
-  const list: string[] = [];
-
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      const text = sanitizeText(item);
-      if (text) list.push(text);
-    }
-  } else if (typeof raw === "string") {
-    raw
-      .split(/\r?\n|,/)
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .forEach((item) => list.push(item));
-  }
-
-  return list.length ? list : undefined;
-}
 
 router.get("/users", (_req: Request, res: Response) => {
   const rows = db.prepare("SELECT id, email, role FROM users ORDER BY id DESC").all();
@@ -189,8 +137,8 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
 
   try {
     const body = req.body ?? {};
-    const tipoPecaRaw = sanitizeText(body.tipo_peca);
-    if (!tipoPecaRaw || !TIPO_PECA_SET.has(tipoPecaRaw)) {
+    const tipoPeca = parseTipoPeca(body.tipo_peca);
+    if (!tipoPeca) {
       return res.status(400).json({ error: "TIPO_PECA_INVALIDO" });
     }
 
@@ -201,7 +149,7 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
     const clienteId = sanitizeText(body.cliente_id);
 
     const payload: GenerateLegalDocumentInput = {
-      tipoPeca: tipoPecaRaw as TipoPeca,
+       tipoPeca,
       resumoFatico: sanitizeText(body.resumo_fatico) ?? "",
       partes,
     };
