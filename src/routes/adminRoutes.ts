@@ -149,6 +149,7 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
     const pedidos = sanitizeText(body.pedidos);
     const documentos = normalizeDocumentList(body.documentos);
     const clienteId = sanitizeText(body.cliente_id);
+    const processoId = sanitizeText(body.processo_id);
 
     const payload: GenerateLegalDocumentInput = {
        tipoPeca,
@@ -168,6 +169,10 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
       payload.clienteId = clienteId;
     }
 
+    if (processoId) {
+      payload.processoId = processoId;
+    }
+
     const resultado = await generateLegalDocument(payload);
     const id = uuidv4();
 
@@ -180,6 +185,7 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
       artigos: resultado.artigos,
       cliente: clienteNome,
       clienteId: clienteId ?? null,
+      processoId: processoId ?? null,
       partes: partes.map((parte) => ({ ...parte })),
     });
 
@@ -194,6 +200,7 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
         tipo: payload.tipoPeca,
         partes: partes.map((parte) => `${parte.papel}:${parte.nome}`),
         clienteId: payload.clienteId ?? null,
+        processoId: payload.processoId ?? null,
       },
       ip: req.ip,
       ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
@@ -258,6 +265,7 @@ router.post(
       const novasInformacoes = sanitizeText(body.novas_informacoes) ?? undefined;
       const pesquisaComplementar = sanitizeText(body.pesquisa_complementar) ?? undefined;
       const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+      const processoId = sanitizeText(body.processo_id) ?? undefined;
       const partes = parsePartes(body.partes);
       const topK =
         typeof body.top_k === "number" && Number.isFinite(body.top_k) ? body.top_k : undefined;
@@ -268,6 +276,7 @@ router.post(
         conteudoAtual,
         novasInformacoes,
         clienteId,
+        processoId,
         partes,
         pesquisaComplementar,
         topKMemoria: topK,
@@ -283,6 +292,7 @@ router.post(
           tipo: tipoPeca,
           bloco,
           clienteId: clienteId ?? null,
+          processoId: processoId ?? null,
         },
         ip: req.ip,
         ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   generateLegalPiece,
   generateSmartPedidos,
+  rewriteFreeformText,
   rewriteTopicWithContext,
   type GeneratePiecePayload,
   type PartePayload,
@@ -102,6 +103,7 @@ interface StoredLegalPiece {
   artigos?: ArticleValidation[];
   cliente?: string | null;
   clienteId?: string | null;
+  processoId?: string | null;
   partes?: ParteData[];
 }
 
@@ -129,6 +131,7 @@ export interface ParteData extends PartePayload {}
 
 export interface GenerateLegalDocumentInput extends Omit<GeneratePiecePayload, "tipoPeca"> {
   tipoPeca: TipoPeca;
+  processoId?: string | null;
 }
 
 export interface LegalDocumentResult {
@@ -143,6 +146,7 @@ export interface RefineTopicInput {
   conteudoAtual: string;
   novasInformacoes?: string;
   clienteId?: string | null;
+  processoId?: string | null;
   partes?: ParteData[];
   pesquisaComplementar?: string;
   topKMemoria?: number;
@@ -164,6 +168,7 @@ export interface RefineStoredPieceInput {
   metadados?: Record<string, unknown>;
   pesquisaComplementar?: string;
   clienteId?: string | null;
+  processoId?: string | null;
   partes?: ParteData[];
   topKMemoria?: number;
   memoriaTipo?: MemoriaConteudoTipo;
@@ -174,6 +179,22 @@ export interface RefineStoredPieceResult {
   textoAtualizado: string;
   memoria: string[];
   jurisprudencias: TavilyLegalResearchResult[];
+  artigos: ArticleValidation[];
+}
+
+export interface RefineFreeformInput {
+  texto: string;
+  clienteId?: string | null;
+  processoId?: string | null;
+  memoriaTipo?: MemoriaConteudoTipo;
+  metadados?: Record<string, unknown>;
+  topKMemoria?: number;
+  instrucoes?: string;
+}
+
+export interface RefineFreeformResult {
+  texto: string;
+  memoria: string[];
   artigos: ArticleValidation[];
 }
 
@@ -258,6 +279,7 @@ export async function generateLegalDocument(
     tipoPeca: input.tipoPeca,
     partes: input.partes,
     clienteId: input.clienteId,
+    processoId: input.processoId,
     jurisprudencias,
     artigos: artigosValidados,
     origem: "geracao",
@@ -385,6 +407,7 @@ async function persistPieceInMemory({
   tipoPeca,
   partes,
   clienteId,
+  processoId,
   jurisprudencias,
   artigos,
   origem,
@@ -395,6 +418,7 @@ async function persistPieceInMemory({
   tipoPeca: TipoPeca;
   partes: ParteData[];
   clienteId?: string | null;
+  processoId?: string | null;
   jurisprudencias?: TavilyLegalResearchResult[];
   artigos?: ArticleValidation[];
   origem?: string;
@@ -421,6 +445,13 @@ async function persistPieceInMemory({
     ...(metadadosExtras ?? {}),
   };
 
+  if (clienteId) {
+    baseMetadados.clienteId = clienteId;
+  }
+  if (processoId) {
+    baseMetadados.processoId = processoId;
+  }
+
   const memorias: Promise<void>[] = [];
 
   for (const bloco of template.blocos) {
@@ -435,11 +466,19 @@ async function persistPieceInMemory({
     }
 
     const topicoTitulo = formatTitle(bloco);
-    const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo, {
+    const metadadosTopico: Record<string, unknown> = {
       tipoPeca,
       origem: origemMemoria,
       ...(metadadosExtras ?? {}),
-    }).catch((error) => {
+    };
+    if (clienteId) {
+      metadadosTopico.clienteId = clienteId;
+    }
+    if (processoId) {
+      metadadosTopico.processoId = processoId;
+    }
+
+    const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo, metadadosTopico).catch((error) => {
       console.warn(`[legalDocGenerator] falha ao memorizar tópico ${bloco}`, error);
     });
     memorias.push(promise);
@@ -748,11 +787,13 @@ function annotateArticlesInText(
 }
 
 export async function refineDocumentTopic(input: RefineTopicInput): Promise<RefineTopicResult> {
-  const memoria = await buscarConteudoRelacionado(
-    input.conteudoAtual,
-    input.topKMemoria ?? 5,
-    input.memoriaTipo
-  );
+  const memoria = await buscarConteudoRelacionado(input.conteudoAtual, {
+    topK: input.topKMemoria ?? 5,
+    tipo: input.memoriaTipo,
+    clienteId: input.clienteId ?? null,
+    processoId: input.processoId ?? null,
+  });
+
   let jurisprudencias: TavilyLegalResearchResult[] = [];
   const pesquisaBase = input.pesquisaComplementar?.trim()
     ? input.pesquisaComplementar.trim()
@@ -805,6 +846,59 @@ export async function refineDocumentTopic(input: RefineTopicInput): Promise<Refi
   };
 }
 
+export async function refineFreeformText(input: RefineFreeformInput): Promise<RefineFreeformResult> {
+  const memoria = await buscarConteudoRelacionado(input.texto, {
+    topK: input.topKMemoria ?? 5,
+    tipo: input.memoriaTipo,
+    clienteId: input.clienteId ?? null,
+    processoId: input.processoId ?? null,
+  });
+
+  const contextoTexto = memoria.length
+    ? `Contexto relevante previamente memorizado:\n${memoria.join("\n\n---\n\n")}`
+    : "Sem memória relacionada disponível.";
+
+  const instrucoesBase = input.instrucoes?.trim()
+    ? input.instrucoes.trim()
+    : "Reescreva o texto com técnica jurídica aprimorada, mantendo coerência, coesão e linguagem formal.";
+
+  const textoReescrito = await rewriteFreeformText({
+    texto: input.texto,
+    contexto: memoria,
+    instrucoes: `${instrucoesBase}\n\n${contextoTexto}`,
+  });
+
+  const textoSemMarcadores = stripArticleMarkers(textoReescrito);
+  const artigos = await verifyLawArticles(extractLawArticles(textoSemMarcadores));
+  const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigos);
+
+  const metadados: Record<string, unknown> = {
+    origem: "refinamento_livre",
+    ...(input.metadados ?? {}),
+  };
+
+  if (input.clienteId) {
+    metadados.clienteId = input.clienteId;
+  }
+
+  if (input.processoId) {
+    metadados.processoId = input.processoId;
+  }
+
+  try {
+    await memorizarConteudo(input.memoriaTipo ?? "tese", textoAnotado, metadados);
+  } catch (error) {
+    console.warn("[legalDocGenerator] falha ao memorizar resultado de refinamento livre", error);
+  }
+
+  return {
+    texto: textoAnotado,
+    memoria,
+    artigos,
+  };
+}
+
+
 export async function refineStoredPieceTopic(
   input: RefineStoredPieceInput
 ): Promise<RefineStoredPieceResult> {
@@ -825,6 +919,7 @@ export async function refineStoredPieceTopic(
   const conteudoAtual = getSectionContent(lines, section);
   const partesBase = (input.partes?.length ? input.partes : piece.partes) ?? [];
   const clienteIdBase = input.clienteId ?? piece.clienteId ?? null;
+  const processoIdBase = input.processoId ?? piece.processoId ?? null;
   let clienteNome = inferClienteNome(partesBase, clienteIdBase);
   if (!clienteNome || clienteNome === "desconhecido") {
     clienteNome = piece.cliente ?? clienteNome;
@@ -839,6 +934,8 @@ export async function refineStoredPieceTopic(
       tipoPeca: piece.tipo,
       pecaId: input.pieceId,
       origem: "refinamento_vetor",
+      ...(clienteIdBase ? { clienteId: clienteIdBase } : {}),
+      ...(processoIdBase ? { processoId: processoIdBase } : {}),
       ...(input.metadados ?? {}),
     });
   }
@@ -850,6 +947,8 @@ export async function refineStoredPieceTopic(
     topico: headingTitulo,
     pecaId: input.pieceId,
     origem: "refinamento",
+    ...(clienteIdBase ? { clienteId: clienteIdBase } : {}),
+    ...(processoIdBase ? { processoId: processoIdBase } : {}),
     ...(input.metadados ?? {}),
   };
 
@@ -859,6 +958,7 @@ export async function refineStoredPieceTopic(
     conteudoAtual,
     novasInformacoes: input.novoConteudo,
     clienteId: clienteIdBase,
+    processoId: processoIdBase,
     partes: partesClonadas,
     pesquisaComplementar: input.pesquisaComplementar,
     topKMemoria: input.topKMemoria,
@@ -880,6 +980,7 @@ export async function refineStoredPieceTopic(
     artigos,
     cliente: clienteNome || piece.cliente || null,
     clienteId: clienteIdBase,
+    processoId: processoIdBase,
     partes: partesClonadas,
   };
 
@@ -891,6 +992,7 @@ export async function refineStoredPieceTopic(
     tipoPeca: piece.tipo,
     partes: partesClonadas,
     clienteId: clienteIdBase,
+    processoId: processoIdBase,
     jurisprudencias: resultado.jurisprudencias,
     artigos,
     origem: "refinamento",

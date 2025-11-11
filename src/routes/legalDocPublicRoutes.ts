@@ -7,6 +7,7 @@ import {
   generateLegalDocument,
   getGeneratedPiece,
   refineDocumentTopic,
+  refineFreeformText,
   refineStoredPieceTopic,
   storeGeneratedPiece,
   MissingRequiredFieldsError,
@@ -19,6 +20,7 @@ import {
   parseTipoPeca,
   sanitizeText,
 } from "./utils/legalDocRequest.js";
+import { buscarConteudoRelacionado } from "../services/memoriaJuridica.js";
 
 const router = Router();
 
@@ -35,6 +37,7 @@ router.post("/gerar", async (req, res) => {
     const pedidos = sanitizeText(body.pedidos);
     const documentos = normalizeDocumentList(body.documentos);
     const clienteId = sanitizeText(body.cliente_id);
+    const processoId = sanitizeText(body.processo_id);
 
     const payload: GenerateLegalDocumentInput = {
       tipoPeca,
@@ -54,6 +57,10 @@ router.post("/gerar", async (req, res) => {
       payload.clienteId = clienteId;
     }
 
+    if (processoId) {
+      payload.processoId = processoId;
+    }
+
     const resultado = await generateLegalDocument(payload);
     const id = uuidv4();
 
@@ -66,6 +73,7 @@ router.post("/gerar", async (req, res) => {
       artigos: resultado.artigos,
       cliente: clienteNome,
       clienteId: clienteId ?? null,
+      processoId: processoId ?? null,
       partes: partes.map((parte) => ({ ...parte })),
     });
 
@@ -121,6 +129,7 @@ router.post("/aprimorar-topico", async (req, res) => {
     const novasInformacoes = sanitizeText(body.novas_informacoes) ?? undefined;
     const pesquisaComplementar = sanitizeText(body.pesquisa_complementar) ?? undefined;
     const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+    const processoId = sanitizeText(body.processo_id) ?? undefined;
     const partes = parsePartes(body.partes);
     const topK = typeof body.top_k === "number" && Number.isFinite(body.top_k) ? body.top_k : undefined;
 
@@ -130,6 +139,7 @@ router.post("/aprimorar-topico", async (req, res) => {
       conteudoAtual,
       novasInformacoes,
       clienteId,
+      processoId,
       partes,
       pesquisaComplementar,
       topKMemoria: topK,
@@ -137,6 +147,8 @@ router.post("/aprimorar-topico", async (req, res) => {
       memoriaMetadados: {
         origem: "refinamento_publico",
         tipoPeca,
+        ...(clienteId ? { clienteId } : {}),
+        ...(processoId ? { processoId } : {}),
       },
     });
 
@@ -217,6 +229,7 @@ router.post("/pecas/:id/topicos/:topicoId/refinar", async (req, res) => {
   const memoriaFiltro = normalizeMemoriaTipo(body.memoria_tipo);
   const pesquisaComplementar = sanitizeText(body.pesquisa_complementar) ?? undefined;
   const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+  const processoId = sanitizeText(body.processo_id) ?? undefined;
   const partes = parsePartes(body.partes);
   const topK =
     typeof body.top_k === "number" && Number.isFinite(body.top_k) ? body.top_k : undefined;
@@ -231,6 +244,7 @@ router.post("/pecas/:id/topicos/:topicoId/refinar", async (req, res) => {
       metadados,
       pesquisaComplementar,
       clienteId,
+      processoId,
       partes,
       topKMemoria: topK,
       memoriaTipo: memoriaFiltro,
@@ -266,6 +280,86 @@ router.post("/pecas/:id/topicos/:topicoId/refinar", async (req, res) => {
     );
     const message = error instanceof Error ? error.message : "ERRO_INTERNO";
     return res.status(500).json({ error: "ERRO_REFINAR_TOPICO_PECA", message });
+  }
+});
+
+router.post("/refinar", async (req, res) => {
+  const body = req.body ?? {};
+  const texto =
+    sanitizeText(body.texto) ||
+    sanitizeText(body.conteudo) ||
+    sanitizeText(body.texto_atual) ||
+    sanitizeText(body.vetor);
+
+  if (!texto) {
+    return res.status(400).json({ error: "TEXTO_OBRIGATORIO" });
+  }
+
+  const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+  const processoId = sanitizeText(body.processo_id) ?? undefined;
+  const memoriaTipo =
+    normalizeMemoriaTipo(body.memoria_tipo || body.tipo || body.categoria) ?? undefined;
+  const instrucoes = sanitizeText(body.instrucoes) ?? undefined;
+  const metadados = parseMetadata(body.metadados);
+  const topK =
+    typeof body.top_k === "number" && Number.isFinite(body.top_k)
+      ? Math.max(1, Math.min(20, Math.trunc(body.top_k)))
+      : undefined;
+
+  try {
+    const resultado = await refineFreeformText({
+      texto,
+      clienteId,
+      processoId,
+      memoriaTipo,
+      metadados,
+      topKMemoria: topK,
+      instrucoes,
+    });
+
+    return res.json({
+      texto_refinado: resultado.texto,
+      memoria_relacionada: resultado.memoria,
+      artigos_validados: resultado.artigos.map((item) => ({
+        artigo: item.artigo,
+        confirmado: item.confirmado,
+        referencia: item.referencia ?? null,
+      })),
+    });
+  } catch (error) {
+    console.error("[publicLegalDoc] erro ao refinar texto livre", error);
+    const message = error instanceof Error ? error.message : "ERRO_INTERNO";
+    return res.status(500).json({ error: "ERRO_REFINAR_TEXTO", message });
+  }
+});
+
+router.get("/memoria", async (req, res) => {
+  const query = sanitizeText(req.query.query);
+  if (!query) {
+    return res.status(400).json({ error: "QUERY_OBRIGATORIA" });
+  }
+
+  const clienteId = sanitizeText(req.query.clienteId) ?? undefined;
+  const processoId = sanitizeText(req.query.processoId) ?? undefined;
+  const tipo = normalizeMemoriaTipo(req.query.tipo);
+  const topK =
+    typeof req.query.topK === "string" && req.query.topK.trim()
+      ? Math.max(1, Math.min(20, Number.parseInt(req.query.topK.trim(), 10) || 5))
+      : 5;
+
+  try {
+    const memoria = await buscarConteudoRelacionado(query, {
+      topK,
+      tipo: tipo ?? undefined,
+      clienteId: clienteId ?? null,
+      processoId: processoId ?? null,
+    });
+
+    return res.json({ resultados: memoria });
+  } catch (error) {
+    console.error("[publicLegalDoc] erro ao consultar memória", error);
+    const message = error instanceof Error ? error.message : "ERRO_INTERNO";
+    return res.status(500).json({ error: "ERRO_CONSULTAR_MEMORIA", message });
   }
 });
 

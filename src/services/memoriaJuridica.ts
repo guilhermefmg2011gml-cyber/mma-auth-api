@@ -29,6 +29,13 @@ export interface MemoriaItem {
   chunkOverlap?: number;
 }
 
+export interface BuscaMemoriaOptions {
+  topK?: number;
+  tipo?: MemoriaConteudoTipo;
+  clienteId?: string | null;
+  processoId?: string | null;
+}
+
 let chromaClient: AxiosInstance | null = null;
 let collectionEnsured: Promise<boolean> | null = null;
 
@@ -231,8 +238,7 @@ export async function memorizarTopico(
 
 export async function buscarConteudoRelacionado(
   pergunta: string,
-  topK = 5,
-  tipo?: MemoriaConteudoTipo
+  options?: BuscaMemoriaOptions
 ): Promise<string[]> {
   const client = getClient();
   if (!client) {
@@ -251,11 +257,22 @@ export async function buscarConteudoRelacionado(
   try {
     const payload: Record<string, unknown> = {
       query_embeddings: embeddings,
-      n_results: topK,
+      n_results: options?.topK ?? 5,
     };
 
-    if (tipo) {
-      payload.where = { tipo };
+    const where: Record<string, unknown> = {};
+    if (options?.tipo) {
+      where.tipo = options.tipo;
+    }
+    if (options?.clienteId) {
+      where.clienteId = options.clienteId;
+    }
+    if (options?.processoId) {
+      where.processoId = options.processoId;
+    }
+
+    if (Object.keys(where).length) {
+      payload.where = where;
     }
 
     const { data } = await client.post(
