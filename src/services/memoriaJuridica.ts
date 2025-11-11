@@ -11,6 +11,24 @@ const CHROMA_COLLECTION = process.env.CHROMA_COLLECTION || "memoria_juridica";
 const DEFAULT_CHUNK_SIZE = Number(process.env.MEMORIA_CHUNK_SIZE || 512);
 const DEFAULT_CHUNK_OVERLAP = Number(process.env.MEMORIA_CHUNK_OVERLAP || 64);
 
+export type MemoriaConteudoTipo =
+  | "peça"
+  | "topico"
+  | "jurisprudencia"
+  | "doutrina"
+  | "artigo"
+  | "tese"
+  | "insight"
+  | string;
+
+export interface MemoriaItem {
+  texto: string;
+  tipo: MemoriaConteudoTipo;
+  metadados?: Record<string, unknown>;
+  chunkSize?: number;
+  chunkOverlap?: number;
+}
+
 let chromaClient: AxiosInstance | null = null;
 let collectionEnsured: Promise<boolean> | null = null;
 
@@ -116,7 +134,11 @@ function splitTextIntoChunks(text: string, chunkSize = DEFAULT_CHUNK_SIZE, overl
   return result;
 }
 
-async function addDocuments(parts: string[], metadatas: Record<string, unknown>[], embeddings: number[][]): Promise<void> {
+async function addDocuments(
+  parts: string[],
+  metadatas: Record<string, unknown>[],
+  embeddings: number[][]
+): Promise<void> {
   const client = getClient();
   if (!client) {
     return;
@@ -138,33 +160,80 @@ async function addDocuments(parts: string[], metadatas: Record<string, unknown>[
   }
 }
 
-export async function memorizarTopico(
-  nomeCliente: string,
-  tituloPeca: string,
-  topico: string,
-  conteudo: string
-): Promise<void> {
-  const partes = splitTextIntoChunks(conteudo);
+export async function memorizarConteudos(itens: MemoriaItem[]): Promise<void> {
+  if (!Array.isArray(itens) || itens.length === 0) {
+    return;
+  }
+
+  const partes: string[] = [];
+  const metadados: Record<string, unknown>[] = [];
+
+  for (const item of itens) {
+    if (!item?.texto?.trim()) {
+      continue;
+    }
+
+    const chunkSize = item.chunkSize ?? DEFAULT_CHUNK_SIZE;
+    const chunkOverlap = item.chunkOverlap ?? DEFAULT_CHUNK_OVERLAP;
+    const chunks = splitTextIntoChunks(item.texto, chunkSize, chunkOverlap);
+
+    for (const chunk of chunks) {
+      if (!chunk) continue;
+      partes.push(chunk);
+      metadados.push({ tipo: item.tipo, ...(item.metadados ?? {}) });
+    }
+  }
+
   if (!partes.length) {
     return;
   }
 
   const embeddings = await embedTexts(partes);
   if (!embeddings.length || embeddings.length !== partes.length) {
-    console.warn("[memoriaJuridica] Embeddings não gerados; tópico não será memorizado");
+    console.warn("[memoriaJuridica] Embeddings não gerados; lote não será memorizado");
     return;
   }
-
-  const metadados = partes.map(() => ({
-    cliente: nomeCliente || "desconhecido",
-    titulo: tituloPeca,
-    topico,
-  }));
 
   await addDocuments(partes, metadados, embeddings);
 }
 
-export async function buscarConteudoRelacionado(pergunta: string, topK = 5): Promise<string[]> {
+export async function memorizarConteudo(
+  tipo: MemoriaConteudoTipo,
+  texto: string,
+  metadados?: Record<string, unknown>,
+  options?: { chunkSize?: number; chunkOverlap?: number }
+): Promise<void> {
+  await memorizarConteudos([
+    {
+      tipo,
+      texto,
+      metadados,
+      chunkSize: options?.chunkSize,
+      chunkOverlap: options?.chunkOverlap,
+    },
+  ]);
+}
+
+export async function memorizarTopico(
+  nomeCliente: string,
+  tituloPeca: string,
+  topico: string,
+  conteudo: string,
+  metadados?: Record<string, unknown>
+): Promise<void> {
+  await memorizarConteudo("topico", conteudo, {
+    cliente: nomeCliente || "desconhecido",
+    titulo: tituloPeca,
+    topico,
+    ...(metadados ?? {}),
+  });
+}
+
+export async function buscarConteudoRelacionado(
+  pergunta: string,
+  topK = 5,
+  tipo?: MemoriaConteudoTipo
+): Promise<string[]> {
   const client = getClient();
   if (!client) {
     return [];
@@ -180,10 +249,19 @@ export async function buscarConteudoRelacionado(pergunta: string, topK = 5): Pro
   }
 
   try {
-    const { data } = await client.post(`/api/v1/collections/${encodeURIComponent(CHROMA_COLLECTION)}/query`, {
+    const payload: Record<string, unknown> = {
       query_embeddings: embeddings,
       n_results: topK,
-    });
+    };
+
+    if (tipo) {
+      payload.where = { tipo };
+    }
+
+    const { data } = await client.post(
+      `/api/v1/collections/${encodeURIComponent(CHROMA_COLLECTION)}/query`,
+      payload
+    );
 
     const documents: unknown = data?.documents;
     if (!Array.isArray(documents)) {

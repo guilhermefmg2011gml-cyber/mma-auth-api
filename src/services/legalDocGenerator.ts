@@ -20,15 +20,73 @@ import {
 } from "../lib/legalDocTemplates.js";
 import {
   buscarConteudoRelacionado,
+  memorizarConteudo,
+  memorizarConteudos,
   memorizarTopico,
+  type MemoriaConteudoTipo,
+  type MemoriaItem,
 } from "./memoriaJuridica.js";
 
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
 const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
 const ARTICLE_REGEX = /Art\.?\s?\d{1,4}[ºo]?(?:,?\s?§\s?\d+)?/gi;
+const ARTICLE_MARKER_REGEX = /\s*\[(?:✔️ Confirmado|⚠️ Não confirmado)\]/g;
 const ARTICLE_QUERY_SUFFIX = "CPC validade e aplicação";
 
 const execFileAsync = promisify(execFile);
+
+function stripArticleMarkers(value: string): string {
+  if (!value) {
+    return "";
+  }
+  return value.replace(ARTICLE_MARKER_REGEX, "");
+}
+
+function inferReferenciaTipo(item: TavilyLegalResearchResult): MemoriaConteudoTipo {
+  const text = [item.title, item.snippet, item.content]
+    .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
+    .join(" ")
+    .toLowerCase();
+
+  if (text.includes("doutrina")) {
+    return "doutrina";
+  }
+
+  if (text.includes("artigo") || text.includes("revista")) {
+    return "artigo";
+  }
+
+  return "jurisprudencia";
+}
+
+function buildReferenciaTexto(item: TavilyLegalResearchResult): string {
+  const titulo = item.title?.trim() || "Referência jurídica";
+  const resumo = item.snippet?.trim() || item.content?.trim() || "";
+  const url = item.url?.trim();
+  const partes = [titulo];
+
+  if (url) {
+    partes.push(`Fonte: ${url}`);
+  }
+
+  if (resumo) {
+    partes.push(resumo);
+  }
+
+  return partes.join("\n");
+}
+
+function buildArticleMemoryText(item: ArticleValidation): string {
+  const status = item.confirmado
+    ? "Artigo confirmado com jurisprudência relacionada"
+    : "Artigo não confirmado";
+  const referencia = item.referencia?.trim();
+  const partes = [item.artigo.trim(), status];
+  if (referencia) {
+    partes.push(`Referência: ${referencia}`);
+  }
+  return partes.join(" - ");
+}
 
 export interface ArticleValidation {
   artigo: string;
@@ -42,6 +100,9 @@ interface StoredLegalPiece {
   texto: string;
   createdAt: Date;
   artigos?: ArticleValidation[];
+  cliente?: string | null;
+  clienteId?: string | null;
+  partes?: ParteData[];
 }
 
 const PIECE_MEMORY = new Map<string, StoredLegalPiece>();
@@ -85,12 +146,49 @@ export interface RefineTopicInput {
   partes?: ParteData[];
   pesquisaComplementar?: string;
   topKMemoria?: number;
+  memoriaTipo?: MemoriaConteudoTipo;
+  memoriaMetadados?: Record<string, unknown>;
 }
 
 export interface RefineTopicResult {
   texto: string;
   memoria: string[];
   jurisprudencias: TavilyLegalResearchResult[];
+}
+
+export interface RefineStoredPieceInput {
+  pieceId: string;
+  topicoId: string;
+  novoConteudo: string;
+  tipoConteudo?: MemoriaConteudoTipo;
+  metadados?: Record<string, unknown>;
+  pesquisaComplementar?: string;
+  clienteId?: string | null;
+  partes?: ParteData[];
+  topKMemoria?: number;
+  memoriaTipo?: MemoriaConteudoTipo;
+}
+
+export interface RefineStoredPieceResult {
+  textoTopico: string;
+  textoAtualizado: string;
+  memoria: string[];
+  jurisprudencias: TavilyLegalResearchResult[];
+  artigos: ArticleValidation[];
+}
+
+export class PieceNotFoundError extends Error {
+  constructor(public readonly pieceId: string) {
+    super(`Peça ${pieceId} não encontrada`);
+    this.name = "PieceNotFoundError";
+  }
+}
+
+export class TopicNotFoundError extends Error {
+  constructor(public readonly topicoId: string) {
+    super(`Tópico ${topicoId} não encontrado`);
+    this.name = "TopicNotFoundError";
+  }
 }
 
 export function validateRequiredFields(
@@ -149,9 +247,10 @@ export async function generateLegalDocument(
     console.warn("[legalDocGenerator] falha ao buscar jurisprudências", error);
   }
 
-  const artigos = extractLawArticles(textoComPedidos);
+  const textoSemMarcadores = stripArticleMarkers(textoComPedidos);
+  const artigos = extractLawArticles(textoSemMarcadores);
   const artigosValidados = await verifyLawArticles(artigos);
-  const textoAnotado = annotateArticlesInText(textoComPedidos, artigosValidados);
+  const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigosValidados);
 
   await persistPieceInMemory({
     texto: textoAnotado,
@@ -159,6 +258,9 @@ export async function generateLegalDocument(
     tipoPeca: input.tipoPeca,
     partes: input.partes,
     clienteId: input.clienteId,
+    jurisprudencias,
+    artigos: artigosValidados,
+    origem: "geracao",
   });
 
   return {
@@ -171,10 +273,7 @@ export async function generateLegalDocument(
 export function storeGeneratedPiece(id: string, data: Omit<StoredLegalPiece, "id">): void {
   PIECE_MEMORY.set(id, {
     id,
-    tipo: data.tipo,
-    texto: data.texto,
-    createdAt: data.createdAt,
-    artigos: data.artigos,
+    ...data,
   });
 }
 
@@ -261,7 +360,7 @@ function mapSectionsToTemplate(
   return { sections, lines, byBlock };
 }
 
-function inferClienteNome(partes: ParteData[], clienteId?: string | null): string {
+export function inferClienteNome(partes: ParteData[], clienteId?: string | null): string {
   const cliente = typeof clienteId === "string" && clienteId.trim() ? clienteId.trim() : null;
   if (cliente) {
     return cliente;
@@ -286,12 +385,20 @@ async function persistPieceInMemory({
   tipoPeca,
   partes,
   clienteId,
+  jurisprudencias,
+  artigos,
+  origem,
+  metadadosExtras,
 }: {
   texto: string;
   template: LegalDocTemplate;
   tipoPeca: TipoPeca;
   partes: ParteData[];
   clienteId?: string | null;
+  jurisprudencias?: TavilyLegalResearchResult[];
+  artigos?: ArticleValidation[];
+  origem?: string;
+  metadadosExtras?: Record<string, unknown>;
 }): Promise<void> {
   if (!texto?.trim()) {
     return;
@@ -304,6 +411,15 @@ async function persistPieceInMemory({
 
   const clienteNome = inferClienteNome(partes, clienteId);
   const titulo = formatTitle(tipoPeca);
+  const origemMemoria = origem ?? "geracao";
+
+  const baseMetadados: Record<string, unknown> = {
+    cliente: clienteNome || "desconhecido",
+    titulo,
+    tipoPeca,
+    origem: origemMemoria,
+    ...(metadadosExtras ?? {}),
+  };
 
   const memorias: Promise<void>[] = [];
 
@@ -313,16 +429,75 @@ async function persistPieceInMemory({
       continue;
     }
 
-    const conteudo = getSectionContent(lines, section);
+    const conteudo = stripArticleMarkers(getSectionContent(lines, section));
     if (!conteudo) {
       continue;
     }
 
     const topicoTitulo = formatTitle(bloco);
-    const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo).catch((error) => {
+    const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo, {
+      tipoPeca,
+      origem: origemMemoria,
+      ...(metadadosExtras ?? {}),
+    }).catch((error) => {
       console.warn(`[legalDocGenerator] falha ao memorizar tópico ${bloco}`, error);
     });
     memorias.push(promise);
+  }
+
+  const memoriaItens: MemoriaItem[] = [];
+  const textoParaMemoria = stripArticleMarkers(texto);
+  if (textoParaMemoria.trim()) {
+    memoriaItens.push({
+      tipo: "peça",
+      texto: textoParaMemoria,
+      metadados: baseMetadados,
+    });
+  }
+
+  if (Array.isArray(jurisprudencias)) {
+    for (const item of jurisprudencias) {
+      const textoReferencia = buildReferenciaTexto(item);
+      if (!textoReferencia.trim()) {
+        continue;
+      }
+      const tipoReferencia = inferReferenciaTipo(item);
+      memoriaItens.push({
+        tipo: tipoReferencia,
+        texto: textoReferencia,
+        metadados: {
+          ...baseMetadados,
+          categoria: tipoReferencia,
+          ...(item.url ? { url: item.url } : {}),
+          ...(item.title ? { referenciaTitulo: item.title } : {}),
+        },
+      });
+    }
+  }
+
+  if (Array.isArray(artigos)) {
+    for (const artigo of artigos) {
+      if (!artigo?.artigo) {
+        continue;
+      }
+      memoriaItens.push({
+        tipo: "artigo",
+        texto: buildArticleMemoryText(artigo),
+        metadados: {
+          ...baseMetadados,
+          confirmado: artigo.confirmado,
+          ...(artigo.referencia ? { referencia: artigo.referencia } : {}),
+        },
+      });
+    }
+  }
+
+  if (memoriaItens.length) {
+    memorias.push(
+      memorizarConteudos(memoriaItens).catch((error) => {
+        console.warn("[legalDocGenerator] falha ao memorizar itens adicionais da peça", error);
+      })
+    );
   }
 
   if (memorias.length) {
@@ -337,6 +512,56 @@ function getSectionContent(lines: string[], section: ParsedSection): string {
   }
   return lines.slice(section.contentStart, section.contentEnd).join("\n").trim();
 }
+
+function resolveSectionByTopicoId(
+  topicoId: string,
+  template: LegalDocTemplate,
+  byBlock: Map<string, ParsedSection>
+): { bloco: string; section: ParsedSection } | null {
+  if (!topicoId) {
+    return null;
+  }
+
+  if (byBlock.has(topicoId)) {
+    return { bloco: topicoId, section: byBlock.get(topicoId)! };
+  }
+
+  const normalizedTarget = normalizeHeadingKey(topicoId);
+
+  for (const bloco of template.blocos) {
+    const section = byBlock.get(bloco);
+    if (!section) {
+      continue;
+    }
+
+    const normalizedBlock = normalizeHeadingKey(bloco);
+    if (normalizedBlock === normalizedTarget) {
+      return { bloco, section };
+    }
+
+    const headingNormalized = normalizeHeadingKey(section.heading || formatTitle(bloco));
+    if (headingNormalized === normalizedTarget) {
+      return { bloco, section };
+    }
+  }
+
+  return null;
+}
+
+function applySectionReplacement(
+  lines: string[],
+  section: ParsedSection,
+  novoConteudo: string
+): string {
+  const before = lines.slice(0, section.contentStart);
+  const after = lines.slice(section.contentEnd);
+  const sanitizedLines = typeof novoConteudo === "string" && novoConteudo.trim()
+    ? novoConteudo.split(/\r?\n/).map((linha) => linha.replace(/\s+$/, ""))
+    : [];
+
+  return [...before, ...sanitizedLines, ...after].join("\n");
+}
+
 
 function sanitizeGeneratedPedidos(value: string): string {
   if (!value) {
@@ -523,8 +748,11 @@ function annotateArticlesInText(
 }
 
 export async function refineDocumentTopic(input: RefineTopicInput): Promise<RefineTopicResult> {
-  const memoria = await buscarConteudoRelacionado(input.conteudoAtual, input.topKMemoria ?? 5);
-
+  const memoria = await buscarConteudoRelacionado(
+    input.conteudoAtual,
+    input.topKMemoria ?? 5,
+    input.memoriaTipo
+  );
   let jurisprudencias: TavilyLegalResearchResult[] = [];
   const pesquisaBase = input.pesquisaComplementar?.trim()
     ? input.pesquisaComplementar.trim()
@@ -562,7 +790,8 @@ export async function refineDocumentTopic(input: RefineTopicInput): Promise<Refi
         clienteNome,
         formatTitle(input.tipoPeca),
         input.blocoTitulo,
-        textoReescrito
+        textoReescrito,
+        input.memoriaMetadados
       );
     } catch (error) {
       console.warn("[legalDocGenerator] falha ao memorizar tópico reescrito", error);
@@ -573,6 +802,110 @@ export async function refineDocumentTopic(input: RefineTopicInput): Promise<Refi
     texto: textoReescrito,
     memoria,
     jurisprudencias,
+  };
+}
+
+export async function refineStoredPieceTopic(
+  input: RefineStoredPieceInput
+): Promise<RefineStoredPieceResult> {
+  const piece = PIECE_MEMORY.get(input.pieceId);
+  if (!piece) {
+    throw new PieceNotFoundError(input.pieceId);
+  }
+
+  const template = getTemplate(piece.tipo);
+  const { lines, byBlock } = mapSectionsToTemplate(piece.texto, template);
+  const resolved = resolveSectionByTopicoId(input.topicoId, template, byBlock);
+  if (!resolved) {
+    throw new TopicNotFoundError(input.topicoId);
+  }
+
+  const { section, bloco } = resolved;
+  const headingTitulo = section.heading || formatTitle(bloco);
+  const conteudoAtual = getSectionContent(lines, section);
+  const partesBase = (input.partes?.length ? input.partes : piece.partes) ?? [];
+  const clienteIdBase = input.clienteId ?? piece.clienteId ?? null;
+  let clienteNome = inferClienteNome(partesBase, clienteIdBase);
+  if (!clienteNome || clienteNome === "desconhecido") {
+    clienteNome = piece.cliente ?? clienteNome;
+  }
+  const partesClonadas = partesBase.map((parte) => ({ ...parte }));
+
+  if (input.novoConteudo?.trim()) {
+    await memorizarConteudo(input.tipoConteudo ?? "tese", input.novoConteudo, {
+      cliente: clienteNome || "desconhecido",
+      titulo: formatTitle(piece.tipo),
+      topico: headingTitulo,
+      tipoPeca: piece.tipo,
+      pecaId: input.pieceId,
+      origem: "refinamento_vetor",
+      ...(input.metadados ?? {}),
+    });
+  }
+
+  const memoriaMetadados = {
+    cliente: clienteNome || "desconhecido",
+    titulo: formatTitle(piece.tipo),
+    tipoPeca: piece.tipo,
+    topico: headingTitulo,
+    pecaId: input.pieceId,
+    origem: "refinamento",
+    ...(input.metadados ?? {}),
+  };
+
+  const resultado = await refineDocumentTopic({
+    tipoPeca: piece.tipo,
+    blocoTitulo: headingTitulo,
+    conteudoAtual,
+    novasInformacoes: input.novoConteudo,
+    clienteId: clienteIdBase,
+    partes: partesClonadas,
+    pesquisaComplementar: input.pesquisaComplementar,
+    topKMemoria: input.topKMemoria,
+    memoriaTipo: input.memoriaTipo,
+    memoriaMetadados,
+  });
+
+  const textoTopico = resultado.texto?.trim() ? resultado.texto : conteudoAtual;
+  const textoAtualizadoBruto = applySectionReplacement(lines, section, textoTopico);
+  const textoSemMarcadores = stripArticleMarkers(textoAtualizadoBruto);
+  const artigos = await verifyLawArticles(extractLawArticles(textoSemMarcadores));
+  const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigos);
+
+  const atualizado: StoredLegalPiece = {
+    id: piece.id,
+    tipo: piece.tipo,
+    texto: textoAnotado,
+    createdAt: new Date(),
+    artigos,
+    cliente: clienteNome || piece.cliente || null,
+    clienteId: clienteIdBase,
+    partes: partesClonadas,
+  };
+
+  PIECE_MEMORY.set(input.pieceId, atualizado);
+
+  await persistPieceInMemory({
+    texto: textoAnotado,
+    template,
+    tipoPeca: piece.tipo,
+    partes: partesClonadas,
+    clienteId: clienteIdBase,
+    jurisprudencias: resultado.jurisprudencias,
+    artigos,
+    origem: "refinamento",
+    metadadosExtras: {
+      pecaId: input.pieceId,
+      ...(input.metadados ?? {}),
+    },
+  });
+
+  return {
+    textoTopico,
+    textoAtualizado: textoAnotado,
+    memoria: resultado.memoria,
+    jurisprudencias: resultado.jurisprudencias,
+    artigos,
   };
 }
 

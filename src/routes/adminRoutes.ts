@@ -13,6 +13,7 @@ import {
   getGeneratedPiece,
   refineDocumentTopic,
   storeGeneratedPiece,
+  inferClienteNome,
   type GenerateLegalDocumentInput,
   type TipoPeca,
   MissingRequiredFieldsError,
@@ -170,11 +171,16 @@ router.post("/ai/gerador-pecas", async (req: AuthenticatedRequest, res: Response
     const resultado = await generateLegalDocument(payload);
     const id = uuidv4();
 
+    const clienteNome = inferClienteNome(partes, clienteId);
+
     storeGeneratedPiece(id, {
       tipo: payload.tipoPeca,
       texto: resultado.texto,
       createdAt: new Date(),
       artigos: resultado.artigos,
+      cliente: clienteNome,
+      clienteId: clienteId ?? null,
+      partes: partes.map((parte) => ({ ...parte })),
     });
 
     audit({
