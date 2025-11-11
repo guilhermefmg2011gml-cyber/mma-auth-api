@@ -121,6 +121,15 @@ export interface GeneratePedidosPayload {
   contextoAtual?: string;
 }
 
+export interface RewriteTopicPayload {
+  tipoPeca: string;
+  blocoTitulo: string;
+  conteudoAtual: string;
+  memoriaRelacionada?: string[];
+  novasInformacoes?: string;
+  referenciasJuridicas?: string[];
+}
+
 function buildPedidosPrompt(payload: GeneratePedidosPayload): string {
   const orientacoesTexto = payload.orientacoes
     ? `Orientações adicionais do cliente: ${payload.orientacoes}.`
@@ -183,6 +192,72 @@ export async function generateSmartPedidos(
   const texto = data?.choices?.[0]?.message?.content;
   if (!texto || typeof texto !== "string") {
     throw new Error("Resposta inválida da OpenAI ao gerar pedidos inteligentes");
+  }
+
+  return texto.trim();
+}
+
+function buildTopicRewritePrompt(payload: RewriteTopicPayload): string {
+  const memoriaTexto = payload.memoriaRelacionada?.length
+    ? `Memória jurídica relacionada:\n${payload.memoriaRelacionada.join("\n\n")}\n\n`
+    : "";
+
+  const novasInformacoes = payload.novasInformacoes?.trim()
+    ? `Novas informações fornecidas:\n${payload.novasInformacoes.trim()}\n\n`
+    : "";
+
+  const referencias = payload.referenciasJuridicas?.length
+    ? `Jurisprudências e doutrinas relevantes:\n${payload.referenciasJuridicas.join("\n\n")}\n\n`
+    : "";
+
+  return (
+    `Você é um advogado brasileiro revisando o tópico "${payload.blocoTitulo}" ` +
+    `de uma peça processual do tipo ${payload.tipoPeca}.\n\n` +
+    `Conteúdo atual do tópico:\n${payload.conteudoAtual}\n\n` +
+    memoriaTexto +
+    novasInformacoes +
+    referencias +
+    "Reescreva o tópico de forma técnica, coerente e aprimorada, mantendo alinhamento com o caso narrado. " +
+    "Atualize fundamentações e pedidos implícitos conforme as referências apresentadas quando fizer sentido. " +
+    "Entregue apenas o texto reescrito do tópico, sem incluir títulos adicionais."
+  );
+}
+
+export async function rewriteTopicWithContext(payload: RewriteTopicPayload): Promise<string> {
+  if (!OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY não configurada");
+  }
+
+  const prompt = buildTopicRewritePrompt(payload);
+
+  const { data } = await axios.post(
+    OPENAI_API_URL,
+    {
+      model: OPENAI_MODEL,
+      messages: [
+        {
+          role: "system",
+          content: "Você é um advogado especialista em revisão de peças judiciais brasileiras.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 60000,
+    }
+  );
+
+  const texto = data?.choices?.[0]?.message?.content;
+  if (!texto || typeof texto !== "string") {
+    throw new Error("Resposta inválida da OpenAI ao aprimorar tópico");
   }
 
   return texto.trim();

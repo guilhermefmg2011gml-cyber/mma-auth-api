@@ -4,6 +4,7 @@ import {
   buildDocxFromPiece,
   generateLegalDocument,
   getGeneratedPiece,
+  refineDocumentTopic,
   storeGeneratedPiece,
   type GenerateLegalDocumentInput,
   MissingRequiredFieldsError,
@@ -87,6 +88,58 @@ router.post("/gerar", async (req, res) => {
     console.error("[publicLegalDoc] erro ao gerar peça", error);
     const message = error instanceof Error ? error.message : "ERRO_INTERNO";
     return res.status(500).json({ error: "ERRO_GERACAO_PECA", message });
+  }
+});
+
+router.post("/aprimorar-topico", async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const tipoPeca = parseTipoPeca(body.tipo_peca);
+    if (!tipoPeca) {
+      return res.status(400).json({ error: "TIPO_PECA_INVALIDO" });
+    }
+
+    const bloco = sanitizeText(body.topico) ?? sanitizeText(body.bloco);
+    if (!bloco) {
+      return res.status(400).json({ error: "TOPICO_OBRIGATORIO" });
+    }
+
+    const conteudoAtual = sanitizeText(body.conteudo_atual);
+    if (!conteudoAtual) {
+      return res.status(400).json({ error: "CONTEUDO_ATUAL_OBRIGATORIO" });
+    }
+
+    const novasInformacoes = sanitizeText(body.novas_informacoes) ?? undefined;
+    const pesquisaComplementar = sanitizeText(body.pesquisa_complementar) ?? undefined;
+    const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+    const partes = parsePartes(body.partes);
+    const topK = typeof body.top_k === "number" && Number.isFinite(body.top_k) ? body.top_k : undefined;
+
+    const resultado = await refineDocumentTopic({
+      tipoPeca,
+      blocoTitulo: bloco,
+      conteudoAtual,
+      novasInformacoes,
+      clienteId,
+      partes,
+      pesquisaComplementar,
+      topKMemoria: topK,
+    });
+
+    return res.json({
+      texto_reescrito: resultado.texto,
+      memoria_relacionada: resultado.memoria,
+      jurisprudencias: resultado.jurisprudencias.map((item) => ({
+        titulo: item.title ?? null,
+        resumo: item.snippet ?? item.content ?? null,
+        url: item.url ?? null,
+        publicado_em: item.publishedAt ?? null,
+      })),
+    });
+  } catch (error) {
+    console.error("[publicLegalDoc] erro ao aprimorar tópico", error);
+    const message = error instanceof Error ? error.message : "ERRO_INTERNO";
+    return res.status(500).json({ error: "ERRO_REESCREVER_TOPICO", message });
   }
 });
 

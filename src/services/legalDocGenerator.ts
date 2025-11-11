@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   generateLegalPiece,
   generateSmartPedidos,
+  rewriteTopicWithContext,
   type GeneratePiecePayload,
   type PartePayload,
 } from "../integrations/openaiClient.js";
@@ -17,6 +18,10 @@ import {
   type TipoPeca,
   type LegalDocTemplate,
 } from "../lib/legalDocTemplates.js";
+import {
+  buscarConteudoRelacionado,
+  memorizarTopico,
+} from "./memoriaJuridica.js";
 
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
 const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
@@ -69,6 +74,23 @@ export interface LegalDocumentResult {
   texto: string;
   jurisprudencias: TavilyLegalResearchResult[];
   artigos: ArticleValidation[];
+}
+
+export interface RefineTopicInput {
+  tipoPeca: TipoPeca;
+  blocoTitulo: string;
+  conteudoAtual: string;
+  novasInformacoes?: string;
+  clienteId?: string | null;
+  partes?: ParteData[];
+  pesquisaComplementar?: string;
+  topKMemoria?: number;
+}
+
+export interface RefineTopicResult {
+  texto: string;
+  memoria: string[];
+  jurisprudencias: TavilyLegalResearchResult[];
 }
 
 export function validateRequiredFields(
@@ -130,6 +152,14 @@ export async function generateLegalDocument(
   const artigos = extractLawArticles(textoComPedidos);
   const artigosValidados = await verifyLawArticles(artigos);
   const textoAnotado = annotateArticlesInText(textoComPedidos, artigosValidados);
+
+  await persistPieceInMemory({
+    texto: textoAnotado,
+    template,
+    tipoPeca: input.tipoPeca,
+    partes: input.partes,
+    clienteId: input.clienteId,
+  });
 
   return {
     texto: textoAnotado,
@@ -230,6 +260,76 @@ function mapSectionsToTemplate(
 
   return { sections, lines, byBlock };
 }
+
+function inferClienteNome(partes: ParteData[], clienteId?: string | null): string {
+  const cliente = typeof clienteId === "string" && clienteId.trim() ? clienteId.trim() : null;
+  if (cliente) {
+    return cliente;
+  }
+
+  const autor = partes.find((parte) => parte.papel === "autor" && parte.nome?.trim());
+  if (autor?.nome) {
+    return autor.nome.trim();
+  }
+
+  const primeiraParteComNome = partes.find((parte) => parte.nome?.trim());
+  if (primeiraParteComNome?.nome) {
+    return primeiraParteComNome.nome.trim();
+  }
+
+  return "desconhecido";
+}
+
+async function persistPieceInMemory({
+  texto,
+  template,
+  tipoPeca,
+  partes,
+  clienteId,
+}: {
+  texto: string;
+  template: LegalDocTemplate;
+  tipoPeca: TipoPeca;
+  partes: ParteData[];
+  clienteId?: string | null;
+}): Promise<void> {
+  if (!texto?.trim()) {
+    return;
+  }
+
+  const { lines, byBlock } = mapSectionsToTemplate(texto, template);
+  if (!byBlock.size) {
+    return;
+  }
+
+  const clienteNome = inferClienteNome(partes, clienteId);
+  const titulo = formatTitle(tipoPeca);
+
+  const memorias: Promise<void>[] = [];
+
+  for (const bloco of template.blocos) {
+    const section = byBlock.get(bloco);
+    if (!section) {
+      continue;
+    }
+
+    const conteudo = getSectionContent(lines, section);
+    if (!conteudo) {
+      continue;
+    }
+
+    const topicoTitulo = formatTitle(bloco);
+    const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo).catch((error) => {
+      console.warn(`[legalDocGenerator] falha ao memorizar tópico ${bloco}`, error);
+    });
+    memorias.push(promise);
+  }
+
+  if (memorias.length) {
+    await Promise.allSettled(memorias);
+  }
+}
+
 
 function getSectionContent(lines: string[], section: ParsedSection): string {
   if (section.contentStart >= section.contentEnd) {
@@ -420,6 +520,60 @@ function annotateArticlesInText(
     const marcador = info.confirmado ? "✔️ Confirmado" : "⚠️ Não confirmado";
     return `${match} [${marcador}]`;
   });
+}
+
+export async function refineDocumentTopic(input: RefineTopicInput): Promise<RefineTopicResult> {
+  const memoria = await buscarConteudoRelacionado(input.conteudoAtual, input.topKMemoria ?? 5);
+
+  let jurisprudencias: TavilyLegalResearchResult[] = [];
+  const pesquisaBase = input.pesquisaComplementar?.trim()
+    ? input.pesquisaComplementar.trim()
+    : input.conteudoAtual.slice(0, 200);
+  const query = `jurisprudência ou doutrina sobre ${input.blocoTitulo} em ${formatTitle(
+    input.tipoPeca
+  )}: ${pesquisaBase}`;
+
+  try {
+    jurisprudencias = await searchLegalInsights(query, DEFAULT_JURIS_DOMAINS, 6);
+  } catch (error) {
+    console.warn("[legalDocGenerator] falha ao buscar jurisprudências para refinamento", error);
+  }
+
+  const referencias = jurisprudencias.map((item) => {
+    const titulo = item.title?.trim() || "Referência jurídica";
+    const url = item.url ? ` (${item.url})` : "";
+    const resumo = item.snippet?.trim() || item.content?.trim() || "";
+    return `${titulo}${url}${resumo ? `\n${resumo}` : ""}`;
+  });
+
+  const textoReescrito = await rewriteTopicWithContext({
+    tipoPeca: input.tipoPeca,
+    blocoTitulo: input.blocoTitulo,
+    conteudoAtual: input.conteudoAtual,
+    memoriaRelacionada: memoria,
+    novasInformacoes: input.novasInformacoes,
+    referenciasJuridicas: referencias,
+  });
+
+  const clienteNome = inferClienteNome(input.partes ?? [], input.clienteId);
+  if (textoReescrito?.trim()) {
+    try {
+      await memorizarTopico(
+        clienteNome,
+        formatTitle(input.tipoPeca),
+        input.blocoTitulo,
+        textoReescrito
+      );
+    } catch (error) {
+      console.warn("[legalDocGenerator] falha ao memorizar tópico reescrito", error);
+    }
+  }
+
+  return {
+    texto: textoReescrito,
+    memoria,
+    jurisprudencias,
+  };
 }
 
 function escapeXml(value: string): string {
