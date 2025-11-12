@@ -3,14 +3,59 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { generateLegalPiece, generateSmartPedidos, } from "../integrations/openaiClient.js";
+import { generateLegalPiece, generateSmartPedidos, rewriteFreeformText, rewriteTopicWithContext, } from "../integrations/openaiClient.js";
 import { searchLegalInsights } from "../integrations/tavilyClient.js";
 import { TIPOS_PECA, getTemplate, } from "../lib/legalDocTemplates.js";
+import { buscarConteudoRelacionado, memorizarConteudo, memorizarConteudos, memorizarTopico, } from "./memoriaJuridica.js";
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
 const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
 const ARTICLE_REGEX = /Art\.?\s?\d{1,4}[ºo]?(?:,?\s?§\s?\d+)?/gi;
+const ARTICLE_MARKER_REGEX = /\s*\[(?:✔️ Confirmado|⚠️ Não confirmado)\]/g;
 const ARTICLE_QUERY_SUFFIX = "CPC validade e aplicação";
 const execFileAsync = promisify(execFile);
+function stripArticleMarkers(value) {
+    if (!value) {
+        return "";
+    }
+    return value.replace(ARTICLE_MARKER_REGEX, "");
+}
+function inferReferenciaTipo(item) {
+    const text = [item.title, item.snippet, item.content]
+        .filter((part) => typeof part === "string" && part.trim().length > 0)
+        .join(" ")
+        .toLowerCase();
+    if (text.includes("doutrina")) {
+        return "doutrina";
+    }
+    if (text.includes("artigo") || text.includes("revista")) {
+        return "artigo";
+    }
+    return "jurisprudencia";
+}
+function buildReferenciaTexto(item) {
+    const titulo = item.title?.trim() || "Referência jurídica";
+    const resumo = item.snippet?.trim() || item.content?.trim() || "";
+    const url = item.url?.trim();
+    const partes = [titulo];
+    if (url) {
+        partes.push(`Fonte: ${url}`);
+    }
+    if (resumo) {
+        partes.push(resumo);
+    }
+    return partes.join("\n");
+}
+function buildArticleMemoryText(item) {
+    const status = item.confirmado
+        ? "Artigo confirmado com jurisprudência relacionada"
+        : "Artigo não confirmado";
+    const referencia = item.referencia?.trim();
+    const partes = [item.artigo.trim(), status];
+    if (referencia) {
+        partes.push(`Referência: ${referencia}`);
+    }
+    return partes.join(" - ");
+}
 const PIECE_MEMORY = new Map();
 function formatTitle(value) {
     return value
@@ -25,6 +70,22 @@ export class MissingRequiredFieldsError extends Error {
         super(`Campos obrigatórios ausentes: ${campos.join(", ")}`);
         this.campos = campos;
         this.name = "MissingRequiredFieldsError";
+    }
+}
+export class PieceNotFoundError extends Error {
+    pieceId;
+    constructor(pieceId) {
+        super(`Peça ${pieceId} não encontrada`);
+        this.pieceId = pieceId;
+        this.name = "PieceNotFoundError";
+    }
+}
+export class TopicNotFoundError extends Error {
+    topicoId;
+    constructor(topicoId) {
+        super(`Tópico ${topicoId} não encontrado`);
+        this.topicoId = topicoId;
+        this.name = "TopicNotFoundError";
     }
 }
 export function validateRequiredFields(input) {
@@ -70,9 +131,21 @@ export async function generateLegalDocument(input) {
     catch (error) {
         console.warn("[legalDocGenerator] falha ao buscar jurisprudências", error);
     }
-    const artigos = extractLawArticles(textoComPedidos);
+    const textoSemMarcadores = stripArticleMarkers(textoComPedidos);
+    const artigos = extractLawArticles(textoSemMarcadores);
     const artigosValidados = await verifyLawArticles(artigos);
-    const textoAnotado = annotateArticlesInText(textoComPedidos, artigosValidados);
+    const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigosValidados);
+    await persistPieceInMemory({
+        texto: textoAnotado,
+        template,
+        tipoPeca: input.tipoPeca,
+        partes: input.partes,
+        clienteId: input.clienteId,
+        processoId: input.processoId,
+        jurisprudencias,
+        artigos: artigosValidados,
+        origem: "geracao",
+    });
     return {
         texto: textoAnotado,
         jurisprudencias: jurisprudencias.slice(0, 3),
@@ -82,10 +155,7 @@ export async function generateLegalDocument(input) {
 export function storeGeneratedPiece(id, data) {
     PIECE_MEMORY.set(id, {
         id,
-        tipo: data.tipo,
-        texto: data.texto,
-        createdAt: data.createdAt,
-        artigos: data.artigos,
+        ...data,
     });
 }
 export function getGeneratedPiece(id) {
@@ -147,11 +217,162 @@ function mapSectionsToTemplate(texto, template) {
     }
     return { sections, lines, byBlock };
 }
+export function inferClienteNome(partes, clienteId) {
+    const cliente = typeof clienteId === "string" && clienteId.trim() ? clienteId.trim() : null;
+    if (cliente) {
+        return cliente;
+    }
+    const autor = partes.find((parte) => parte.papel === "autor" && parte.nome?.trim());
+    if (autor?.nome) {
+        return autor.nome.trim();
+    }
+    const primeiraParteComNome = partes.find((parte) => parte.nome?.trim());
+    if (primeiraParteComNome?.nome) {
+        return primeiraParteComNome.nome.trim();
+    }
+    return "desconhecido";
+}
+async function persistPieceInMemory({ texto, template, tipoPeca, partes, clienteId, processoId, jurisprudencias, artigos, origem, metadadosExtras, }) {
+    if (!texto?.trim()) {
+        return;
+    }
+    const { lines, byBlock } = mapSectionsToTemplate(texto, template);
+    if (!byBlock.size) {
+        return;
+    }
+    const clienteNome = inferClienteNome(partes, clienteId);
+    const titulo = formatTitle(tipoPeca);
+    const origemMemoria = origem ?? "geracao";
+    const baseMetadados = {
+        cliente: clienteNome || "desconhecido",
+        titulo,
+        tipoPeca,
+        origem: origemMemoria,
+        ...(metadadosExtras ?? {}),
+    };
+    if (clienteId) {
+        baseMetadados.clienteId = clienteId;
+    }
+    if (processoId) {
+        baseMetadados.processoId = processoId;
+    }
+    const memorias = [];
+    for (const bloco of template.blocos) {
+        const section = byBlock.get(bloco);
+        if (!section) {
+            continue;
+        }
+        const conteudo = stripArticleMarkers(getSectionContent(lines, section));
+        if (!conteudo) {
+            continue;
+        }
+        const topicoTitulo = formatTitle(bloco);
+        const metadadosTopico = {
+            tipoPeca,
+            origem: origemMemoria,
+            ...(metadadosExtras ?? {}),
+        };
+        if (clienteId) {
+            metadadosTopico.clienteId = clienteId;
+        }
+        if (processoId) {
+            metadadosTopico.processoId = processoId;
+        }
+        const promise = memorizarTopico(clienteNome, titulo, topicoTitulo, conteudo, metadadosTopico).catch((error) => {
+            console.warn(`[legalDocGenerator] falha ao memorizar tópico ${bloco}`, error);
+        });
+        memorias.push(promise);
+    }
+    const memoriaItens = [];
+    const textoParaMemoria = stripArticleMarkers(texto);
+    if (textoParaMemoria.trim()) {
+        memoriaItens.push({
+            tipo: "peça",
+            texto: textoParaMemoria,
+            metadados: baseMetadados,
+        });
+    }
+    if (Array.isArray(jurisprudencias)) {
+        for (const item of jurisprudencias) {
+            const textoReferencia = buildReferenciaTexto(item);
+            if (!textoReferencia.trim()) {
+                continue;
+            }
+            const tipoReferencia = inferReferenciaTipo(item);
+            memoriaItens.push({
+                tipo: tipoReferencia,
+                texto: textoReferencia,
+                metadados: {
+                    ...baseMetadados,
+                    categoria: tipoReferencia,
+                    ...(item.url ? { url: item.url } : {}),
+                    ...(item.title ? { referenciaTitulo: item.title } : {}),
+                },
+            });
+        }
+    }
+    if (Array.isArray(artigos)) {
+        for (const artigo of artigos) {
+            if (!artigo?.artigo) {
+                continue;
+            }
+            memoriaItens.push({
+                tipo: "artigo",
+                texto: buildArticleMemoryText(artigo),
+                metadados: {
+                    ...baseMetadados,
+                    confirmado: artigo.confirmado,
+                    ...(artigo.referencia ? { referencia: artigo.referencia } : {}),
+                },
+            });
+        }
+    }
+    if (memoriaItens.length) {
+        memorias.push(memorizarConteudos(memoriaItens).catch((error) => {
+            console.warn("[legalDocGenerator] falha ao memorizar itens adicionais da peça", error);
+        }));
+    }
+    if (memorias.length) {
+        await Promise.allSettled(memorias);
+    }
+}
 function getSectionContent(lines, section) {
     if (section.contentStart >= section.contentEnd) {
         return "";
     }
     return lines.slice(section.contentStart, section.contentEnd).join("\n").trim();
+}
+function resolveSectionByTopicoId(topicoId, template, byBlock) {
+    if (!topicoId) {
+        return null;
+    }
+    if (byBlock.has(topicoId)) {
+        return { bloco: topicoId, section: byBlock.get(topicoId) };
+    }
+    const normalizedTarget = normalizeHeadingKey(topicoId);
+    for (const bloco of template.blocos) {
+        const section = byBlock.get(bloco);
+        if (!section) {
+            continue;
+        }
+        const normalizedBlock = normalizeHeadingKey(bloco);
+        if (normalizedBlock === normalizedTarget) {
+            return { bloco, section };
+        }
+        const headingNormalized = normalizeHeadingKey(section.heading || formatTitle(bloco));
+        if (headingNormalized === normalizedTarget) {
+            return { bloco, section };
+        }
+    }
+    return null;
+}
+function applySectionReplacement(lines, section, novoConteudo) {
+    const before = lines.slice(0, section.contentStart);
+    const after = lines.slice(section.contentEnd);
+    const sanitizedLines = typeof novoConteudo === "string" && novoConteudo.trim()
+        ? novoConteudo.split(/\r?\n/).map((linha) => linha.replace(/\s+$/, ""))
+        : [];
+    return [...before, ...sanitizedLines, ...after].join("\n");
 }
 function sanitizeGeneratedPedidos(value) {
     if (!value) {
@@ -293,6 +514,195 @@ function annotateArticlesInText(texto, validacoes) {
         const marcador = info.confirmado ? "✔️ Confirmado" : "⚠️ Não confirmado";
         return `${match} [${marcador}]`;
     });
+}
+export async function refineDocumentTopic(input) {
+    const memoria = await buscarConteudoRelacionado(input.conteudoAtual, {
+        topK: input.topKMemoria ?? 5,
+        tipo: input.memoriaTipo,
+        clienteId: input.clienteId ?? null,
+        processoId: input.processoId ?? null,
+    });
+    let jurisprudencias = [];
+    const pesquisaBase = input.pesquisaComplementar?.trim()
+        ? input.pesquisaComplementar.trim()
+        : input.conteudoAtual.slice(0, 200);
+    const query = `jurisprudência ou doutrina sobre ${input.blocoTitulo} em ${formatTitle(input.tipoPeca)}: ${pesquisaBase}`;
+    try {
+        jurisprudencias = await searchLegalInsights(query, DEFAULT_JURIS_DOMAINS, 6);
+    }
+    catch (error) {
+        console.warn("[legalDocGenerator] falha ao buscar jurisprudências para refinamento", error);
+    }
+    const referencias = jurisprudencias.map((item) => {
+        const titulo = item.title?.trim() || "Referência jurídica";
+        const url = item.url ? ` (${item.url})` : "";
+        const resumo = item.snippet?.trim() || item.content?.trim() || "";
+        return `${titulo}${url}${resumo ? `\n${resumo}` : ""}`;
+    });
+    const textoReescrito = await rewriteTopicWithContext({
+        tipoPeca: input.tipoPeca,
+        blocoTitulo: input.blocoTitulo,
+        conteudoAtual: input.conteudoAtual,
+        memoriaRelacionada: memoria,
+        novasInformacoes: input.novasInformacoes,
+        referenciasJuridicas: referencias,
+    });
+    const clienteNome = inferClienteNome(input.partes ?? [], input.clienteId);
+    if (textoReescrito?.trim()) {
+        try {
+            await memorizarTopico(clienteNome, formatTitle(input.tipoPeca), input.blocoTitulo, textoReescrito, input.memoriaMetadados);
+        }
+        catch (error) {
+            console.warn("[legalDocGenerator] falha ao memorizar tópico reescrito", error);
+        }
+    }
+    return {
+        texto: textoReescrito,
+        memoria,
+        jurisprudencias,
+    };
+}
+export async function refineFreeformText(input) {
+    const memoria = await buscarConteudoRelacionado(input.texto, {
+        topK: input.topKMemoria ?? 5,
+        tipo: input.memoriaTipo,
+        clienteId: input.clienteId ?? null,
+        processoId: input.processoId ?? null,
+    });
+    const contextoTexto = memoria.length
+        ? `Contexto relevante previamente memorizado:\n${memoria.join("\n\n---\n\n")}`
+        : "Sem memória relacionada disponível.";
+    const instrucoesBase = input.instrucoes?.trim()
+        ? input.instrucoes.trim()
+        : "Reescreva o texto com técnica jurídica aprimorada, mantendo coerência, coesão e linguagem formal.";
+    const textoReescrito = await rewriteFreeformText({
+        texto: input.texto,
+        contexto: memoria,
+        instrucoes: `${instrucoesBase}\n\n${contextoTexto}`,
+    });
+    const textoSemMarcadores = stripArticleMarkers(textoReescrito);
+    const artigos = await verifyLawArticles(extractLawArticles(textoSemMarcadores));
+    const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigos);
+    const metadados = {
+        origem: "refinamento_livre",
+        ...(input.metadados ?? {}),
+    };
+    if (input.clienteId) {
+        metadados.clienteId = input.clienteId;
+    }
+    if (input.processoId) {
+        metadados.processoId = input.processoId;
+    }
+    try {
+        await memorizarConteudo(input.memoriaTipo ?? "tese", textoAnotado, metadados);
+    }
+    catch (error) {
+        console.warn("[legalDocGenerator] falha ao memorizar resultado de refinamento livre", error);
+    }
+    return {
+        texto: textoAnotado,
+        memoria,
+        artigos,
+    };
+}
+export async function refineStoredPieceTopic(input) {
+    const piece = PIECE_MEMORY.get(input.pieceId);
+    if (!piece) {
+        throw new PieceNotFoundError(input.pieceId);
+    }
+    const template = getTemplate(piece.tipo);
+    const { lines, byBlock } = mapSectionsToTemplate(piece.texto, template);
+    const resolved = resolveSectionByTopicoId(input.topicoId, template, byBlock);
+    if (!resolved) {
+        throw new TopicNotFoundError(input.topicoId);
+    }
+    const { section, bloco } = resolved;
+    const headingTitulo = section.heading || formatTitle(bloco);
+    const conteudoAtual = getSectionContent(lines, section);
+    const partesBase = (input.partes?.length ? input.partes : piece.partes) ?? [];
+    const clienteIdBase = input.clienteId ?? piece.clienteId ?? null;
+    const processoIdBase = input.processoId ?? piece.processoId ?? null;
+    let clienteNome = inferClienteNome(partesBase, clienteIdBase);
+    if (!clienteNome || clienteNome === "desconhecido") {
+        clienteNome = piece.cliente ?? clienteNome;
+    }
+    const partesClonadas = partesBase.map((parte) => ({ ...parte }));
+    if (input.novoConteudo?.trim()) {
+        await memorizarConteudo(input.tipoConteudo ?? "tese", input.novoConteudo, {
+            cliente: clienteNome || "desconhecido",
+            titulo: formatTitle(piece.tipo),
+            topico: headingTitulo,
+            tipoPeca: piece.tipo,
+            pecaId: input.pieceId,
+            origem: "refinamento_vetor",
+            ...(clienteIdBase ? { clienteId: clienteIdBase } : {}),
+            ...(processoIdBase ? { processoId: processoIdBase } : {}),
+            ...(input.metadados ?? {}),
+        });
+    }
+    const memoriaMetadados = {
+        cliente: clienteNome || "desconhecido",
+        titulo: formatTitle(piece.tipo),
+        tipoPeca: piece.tipo,
+        topico: headingTitulo,
+        pecaId: input.pieceId,
+        origem: "refinamento",
+        ...(clienteIdBase ? { clienteId: clienteIdBase } : {}),
+        ...(processoIdBase ? { processoId: processoIdBase } : {}),
+        ...(input.metadados ?? {}),
+    };
+    const resultado = await refineDocumentTopic({
+        tipoPeca: piece.tipo,
+        blocoTitulo: headingTitulo,
+        conteudoAtual,
+        novasInformacoes: input.novoConteudo,
+        clienteId: clienteIdBase,
+        processoId: processoIdBase,
+        partes: partesClonadas,
+        pesquisaComplementar: input.pesquisaComplementar,
+        topKMemoria: input.topKMemoria,
+        memoriaTipo: input.memoriaTipo,
+        memoriaMetadados,
+    });
+    const textoTopico = resultado.texto?.trim() ? resultado.texto : conteudoAtual;
+    const textoAtualizadoBruto = applySectionReplacement(lines, section, textoTopico);
+    const textoSemMarcadores = stripArticleMarkers(textoAtualizadoBruto);
+    const artigos = await verifyLawArticles(extractLawArticles(textoSemMarcadores));
+    const textoAnotado = annotateArticlesInText(textoSemMarcadores, artigos);
+    const atualizado = {
+        id: piece.id,
+        tipo: piece.tipo,
+        texto: textoAnotado,
+        createdAt: new Date(),
+        artigos,
+        cliente: clienteNome || piece.cliente || null,
+        clienteId: clienteIdBase,
+        processoId: processoIdBase,
+        partes: partesClonadas,
+    };
+    PIECE_MEMORY.set(input.pieceId, atualizado);
+    await persistPieceInMemory({
+        texto: textoAnotado,
+        template,
+        tipoPeca: piece.tipo,
+        partes: partesClonadas,
+        clienteId: clienteIdBase,
+        processoId: processoIdBase,
+        jurisprudencias: resultado.jurisprudencias,
+        artigos,
+        origem: "refinamento",
+        metadadosExtras: {
+            pecaId: input.pieceId,
+            ...(input.metadados ?? {}),
+        },
+    });
+    return {
+        textoTopico,
+        textoAtualizado: textoAnotado,
+        memoria: resultado.memoria,
+        jurisprudencias: resultado.jurisprudencias,
+        artigos,
+    };
 }
 function escapeXml(value) {
     return value

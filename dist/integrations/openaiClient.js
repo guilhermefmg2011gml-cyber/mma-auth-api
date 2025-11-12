@@ -2,7 +2,7 @@ import axios from "axios";
 const DEFAULT_OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_API_URL = process.env.OPENAI_API_URL || DEFAULT_OPENAI_URL;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 function formatBlockTitle(block) {
     return block
         .split(/[_\s]+/)
@@ -123,6 +123,100 @@ export async function generateSmartPedidos(payload) {
     const texto = data?.choices?.[0]?.message?.content;
     if (!texto || typeof texto !== "string") {
         throw new Error("Resposta inválida da OpenAI ao gerar pedidos inteligentes");
+    }
+    return texto.trim();
+}
+function buildTopicRewritePrompt(payload) {
+    const memoriaTexto = payload.memoriaRelacionada?.length
+        ? `Memória jurídica relacionada:\n${payload.memoriaRelacionada.join("\n\n")}\n\n`
+        : "";
+    const novasInformacoes = payload.novasInformacoes?.trim()
+        ? `Novas informações fornecidas:\n${payload.novasInformacoes.trim()}\n\n`
+        : "";
+    const referencias = payload.referenciasJuridicas?.length
+        ? `Jurisprudências e doutrinas relevantes:\n${payload.referenciasJuridicas.join("\n\n")}\n\n`
+        : "";
+    return (`Você é um advogado brasileiro revisando o tópico "${payload.blocoTitulo}" ` +
+        `de uma peça processual do tipo ${payload.tipoPeca}.\n\n` +
+        `Conteúdo atual do tópico:\n${payload.conteudoAtual}\n\n` +
+        memoriaTexto +
+        novasInformacoes +
+        referencias +
+        "Reescreva o tópico de forma técnica, coerente e aprimorada, mantendo alinhamento com o caso narrado. " +
+        "Atualize fundamentações e pedidos implícitos conforme as referências apresentadas quando fizer sentido. " +
+        "Entregue apenas o texto reescrito do tópico, sem incluir títulos adicionais.");
+}
+export async function rewriteTopicWithContext(payload) {
+    if (!OPENAI_API_KEY) {
+        throw new Error("OPENAI_API_KEY não configurada");
+    }
+    const prompt = buildTopicRewritePrompt(payload);
+    const { data } = await axios.post(OPENAI_API_URL, {
+        model: OPENAI_MODEL,
+        messages: [
+            {
+                role: "system",
+                content: "Você é um advogado especialista em revisão de peças judiciais brasileiras.",
+            },
+            {
+                role: "user",
+                content: prompt,
+            },
+        ],
+        temperature: 0.3,
+    }, {
+        headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+        },
+        timeout: 60000,
+    });
+    const texto = data?.choices?.[0]?.message?.content;
+    if (!texto || typeof texto !== "string") {
+        throw new Error("Resposta inválida da OpenAI ao aprimorar tópico");
+    }
+    return texto.trim();
+}
+function buildFreeformRewritePrompt(payload) {
+    const contexto = payload.contexto?.length
+        ? `Contexto adicional relevante:\n${payload.contexto.join("\n\n---\n\n")}\n\n`
+        : "Contexto adicional relevante: não há registros disponíveis.\n\n";
+    const instrucoes = payload.instrucoes?.trim()
+        ? payload.instrucoes.trim()
+        : "Reescreva o texto aprimorando clareza, coesão, técnica jurídica e correção gramatical, mantendo o sentido essencial.";
+    return (`${instrucoes}\n\n` +
+        `${contexto}` +
+        `Texto atual:\n${payload.texto}\n\n` +
+        `Retorne somente o texto reescrito, sem comentários adicionais.`);
+}
+export async function rewriteFreeformText(payload) {
+    if (!OPENAI_API_KEY) {
+        throw new Error("OPENAI_API_KEY não configurada");
+    }
+    const prompt = buildFreeformRewritePrompt(payload);
+    const { data } = await axios.post(OPENAI_API_URL, {
+        model: OPENAI_MODEL,
+        messages: [
+            {
+                role: "system",
+                content: "Você é um advogado brasileiro especializado em revisão e aprimoramento de peças processuais.",
+            },
+            {
+                role: "user",
+                content: prompt,
+            },
+        ],
+        temperature: 0.3,
+    }, {
+        headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+            "Content-Type": "application/json",
+        },
+        timeout: 60000,
+    });
+    const texto = data?.choices?.[0]?.message?.content;
+    if (!texto || typeof texto !== "string") {
+        throw new Error("Resposta inválida da OpenAI ao refinar texto");
     }
     return texto.trim();
 }

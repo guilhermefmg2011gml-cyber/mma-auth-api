@@ -6,7 +6,7 @@ import requirePermission from "../middleware/requirePermission.js";
 import bcrypt from "bcryptjs";
 import { audit } from "../audit.js";
 import { v4 as uuidv4 } from "uuid";
-import { buildDocxFromPiece, generateLegalDocument, getGeneratedPiece, storeGeneratedPiece, MissingRequiredFieldsError, } from "../services/legalDocGenerator.js";
+import { buildDocxFromPiece, generateLegalDocument, getGeneratedPiece, refineDocumentTopic, storeGeneratedPiece, inferClienteNome, MissingRequiredFieldsError, } from "../services/legalDocGenerator.js";
 import { normalizeDocumentList, parsePartes, parseTipoPeca, sanitizeText, } from "./utils/legalDocRequest.js";
 const router = Router();
 router.use(requireAuth, attachUser, requirePermission("users:read"));
@@ -123,6 +123,7 @@ router.post("/ai/gerador-pecas", async (req, res) => {
         const pedidos = sanitizeText(body.pedidos);
         const documentos = normalizeDocumentList(body.documentos);
         const clienteId = sanitizeText(body.cliente_id);
+        const processoId = sanitizeText(body.processo_id);
         const payload = {
             tipoPeca,
             resumoFatico: sanitizeText(body.resumo_fatico) ?? "",
@@ -137,13 +138,21 @@ router.post("/ai/gerador-pecas", async (req, res) => {
         if (clienteId) {
             payload.clienteId = clienteId;
         }
+        if (processoId) {
+            payload.processoId = processoId;
+        }
         const resultado = await generateLegalDocument(payload);
         const id = uuidv4();
+        const clienteNome = inferClienteNome(partes, clienteId);
         storeGeneratedPiece(id, {
             tipo: payload.tipoPeca,
             texto: resultado.texto,
             createdAt: new Date(),
             artigos: resultado.artigos,
+            cliente: clienteNome,
+            clienteId: clienteId ?? null,
+            processoId: processoId ?? null,
+            partes: partes.map((parte) => ({ ...parte })),
         });
         audit({
             byUserId: req.user.id,
@@ -156,6 +165,7 @@ router.post("/ai/gerador-pecas", async (req, res) => {
                 tipo: payload.tipoPeca,
                 partes: partes.map((parte) => `${parte.papel}:${parte.nome}`),
                 clienteId: payload.clienteId ?? null,
+                processoId: payload.processoId ?? null,
             },
             ip: req.ip,
             ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
@@ -188,6 +198,73 @@ router.post("/ai/gerador-pecas", async (req, res) => {
         console.error("[adminRoutes] falha ao gerar peça", error);
         const message = error instanceof Error ? error.message : "ERRO_INTERNO";
         return res.status(500).json({ error: "ERRO_GERACAO_PECA", message });
+    }
+});
+router.post("/ai/gerador-pecas/aprimorar-topico", requirePermission("ai:generate"), async (req, res) => {
+    if (!req.user) {
+        return res.status(401).json({ error: "UNAUTHORIZED" });
+    }
+    try {
+        const body = req.body ?? {};
+        const tipoPeca = parseTipoPeca(body.tipo_peca);
+        if (!tipoPeca) {
+            return res.status(400).json({ error: "TIPO_PECA_INVALIDO" });
+        }
+        const bloco = sanitizeText(body.topico) ?? sanitizeText(body.bloco);
+        if (!bloco) {
+            return res.status(400).json({ error: "TOPICO_OBRIGATORIO" });
+        }
+        const conteudoAtual = sanitizeText(body.conteudo_atual);
+        if (!conteudoAtual) {
+            return res.status(400).json({ error: "CONTEUDO_ATUAL_OBRIGATORIO" });
+        }
+        const novasInformacoes = sanitizeText(body.novas_informacoes) ?? undefined;
+        const pesquisaComplementar = sanitizeText(body.pesquisa_complementar) ?? undefined;
+        const clienteId = sanitizeText(body.cliente_id) ?? undefined;
+        const processoId = sanitizeText(body.processo_id) ?? undefined;
+        const partes = parsePartes(body.partes);
+        const topK = typeof body.top_k === "number" && Number.isFinite(body.top_k) ? body.top_k : undefined;
+        const resultado = await refineDocumentTopic({
+            tipoPeca,
+            blocoTitulo: bloco,
+            conteudoAtual,
+            novasInformacoes,
+            clienteId,
+            processoId,
+            partes,
+            pesquisaComplementar,
+            topKMemoria: topK,
+        });
+        audit({
+            byUserId: req.user.id,
+            byUserEmail: req.user.email,
+            action: "ai:refine_topic",
+            entity: "ai_generator",
+            entityId: null,
+            diff: {
+                tipo: tipoPeca,
+                bloco,
+                clienteId: clienteId ?? null,
+                processoId: processoId ?? null,
+            },
+            ip: req.ip,
+            ua: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
+        });
+        return res.json({
+            textoReescrito: resultado.texto,
+            memoriaRelacionada: resultado.memoria,
+            jurisprudencias: resultado.jurisprudencias.map((item) => ({
+                titulo: item.title ?? null,
+                resumo: item.snippet ?? item.content ?? null,
+                url: item.url ?? null,
+                publicadoEm: item.publishedAt ?? null,
+            })),
+        });
+    }
+    catch (error) {
+        console.error("[adminLegalDoc] erro ao aprimorar tópico", error);
+        const message = error instanceof Error ? error.message : "ERRO_INTERNO";
+        return res.status(500).json({ error: "ERRO_REFINAR_TOPICO", message });
     }
 });
 router.get("/ai/gerador-pecas/:id/exportar", async (req, res) => {
