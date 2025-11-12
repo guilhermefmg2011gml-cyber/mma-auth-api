@@ -20,7 +20,12 @@ import {
   parseTipoPeca,
   sanitizeText,
 } from "./utils/legalDocRequest.js";
-import { buscarConteudoRelacionado } from "../services/memoriaJuridica.js";
+import {
+  buscarConteudoRelacionado,
+  listarMemoriaPorCliente,
+  listarMemoriaPorProcesso,
+} from "../services/memoriaJuridica.js";
+
 
 const router = Router();
 
@@ -361,6 +366,30 @@ router.get("/memoria", async (req, res) => {
     const message = error instanceof Error ? error.message : "ERRO_INTERNO";
     return res.status(500).json({ error: "ERRO_CONSULTAR_MEMORIA", message });
   }
+});
+
+router.get("/memoria/cliente/:clienteId", async (req, res) => {
+  const { clienteId } = req.params;
+  const id = sanitizeText(clienteId);
+  if (!id) {
+    return res.status(400).json({ error: "CLIENTE_ID_OBRIGATORIO" });
+  }
+
+  const limit = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) || 20 : 20;
+  const registros = await listarMemoriaPorCliente(id, Math.max(1, Math.min(100, limit)));
+  return res.json({ resultados: registros });
+});
+
+router.get("/memoria/processo/:processoId", async (req, res) => {
+  const { processoId } = req.params;
+  const id = sanitizeText(processoId);
+  if (!id) {
+    return res.status(400).json({ error: "PROCESSO_ID_OBRIGATORIO" });
+  }
+
+  const limit = typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) || 20 : 20;
+  const registros = await listarMemoriaPorProcesso(id, Math.max(1, Math.min(100, limit)));
+  return res.json({ resultados: registros });
 });
 
 router.get("/exportar/:id", async (req, res) => {

@@ -27,7 +27,6 @@ import {
   type MemoriaConteudoTipo,
   type MemoriaItem,
 } from "./memoriaJuridica.js";
-
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
 const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
 const ARTICLE_REGEX = /Art\.?\s?\d{1,4}[ºo]?(?:,?\s?§\s?\d+)?/gi;
@@ -492,6 +491,10 @@ async function persistPieceInMemory({
       texto: textoParaMemoria,
       metadados: baseMetadados,
     });
+    recordLocalMemoryEntry(textoParaMemoria, tipoPeca, {
+      clienteId: clienteId ?? null,
+      processoId: processoId ?? null,
+    });
   }
 
   if (Array.isArray(jurisprudencias)) {
@@ -509,19 +512,18 @@ async function persistPieceInMemory({
           categoria: tipoReferencia,
           ...(item.url ? { url: item.url } : {}),
           ...(item.title ? { referenciaTitulo: item.title } : {}),
-        },
-      });
-    }
-  }
+        });
+      }
 
   if (Array.isArray(artigos)) {
     for (const artigo of artigos) {
       if (!artigo?.artigo) {
         continue;
       }
+      const artigoTexto = buildArticleMemoryText(artigo);
       memoriaItens.push({
         tipo: "artigo",
-        texto: buildArticleMemoryText(artigo),
+        texto: artigoTexto,
         metadados: {
           ...baseMetadados,
           confirmado: artigo.confirmado,
@@ -897,7 +899,6 @@ export async function refineFreeformText(input: RefineFreeformInput): Promise<Re
     artigos,
   };
 }
-
 
 export async function refineStoredPieceTopic(
   input: RefineStoredPieceInput

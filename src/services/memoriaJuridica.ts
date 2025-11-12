@@ -36,6 +36,23 @@ export interface BuscaMemoriaOptions {
   processoId?: string | null;
 }
 
+export interface MemoriaRegistro {
+  id: string;
+  texto: string;
+  tipo: string | null;
+  clienteId: string | null;
+  processoId: string | null;
+  criadoEm: string | null;
+  metadados: Record<string, unknown> | null;
+}
+
+export interface ListarMemoriaOptions {
+  clienteId?: string | null;
+  processoId?: string | null;
+  tipo?: MemoriaConteudoTipo;
+  limit?: number;
+}
+
 let chromaClient: AxiosInstance | null = null;
 let collectionEnsured: Promise<boolean> | null = null;
 
@@ -187,7 +204,16 @@ export async function memorizarConteudos(itens: MemoriaItem[]): Promise<void> {
     for (const chunk of chunks) {
       if (!chunk) continue;
       partes.push(chunk);
-      metadados.push({ tipo: item.tipo, ...(item.metadados ?? {}) });
+      const metadata: Record<string, unknown> = {
+        tipo: item.tipo,
+        ...(item.metadados ?? {}),
+      };
+
+      if (!("criadoEm" in metadata)) {
+        metadata.criadoEm = new Date().toISOString();
+      }
+
+      metadados.push(metadata);
     }
   }
 
@@ -232,6 +258,7 @@ export async function memorizarTopico(
     cliente: nomeCliente || "desconhecido",
     titulo: tituloPeca,
     topico,
+    criadoEm: new Date().toISOString(),
     ...(metadados ?? {}),
   });
 }
@@ -301,4 +328,128 @@ export async function buscarConteudoRelacionado(
     console.warn("[memoriaJuridica] Falha ao consultar memórias relacionadas", error);
     return [];
   }
+}
+
+function flattenResponse<T>(value: unknown): T[] {
+  const result: T[] = [];
+  if (!Array.isArray(value)) {
+    return result;
+  }
+
+  for (const item of value) {
+    if (Array.isArray(item)) {
+      for (const nested of item) {
+        result.push(nested as T);
+      }
+    } else {
+      result.push(item as T);
+    }
+  }
+
+  return result;
+}
+
+function sanitizeMetadata(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return { ...(value as Record<string, unknown>) };
+}
+
+async function listarMemoriasInterno(options: ListarMemoriaOptions = {}): Promise<MemoriaRegistro[]> {
+  const client = getClient();
+  if (!client) {
+    return [];
+  }
+
+  if (!(await ensureCollection())) {
+    return [];
+  }
+
+  const where: Record<string, unknown> = {};
+  if (options.clienteId) {
+    where.clienteId = options.clienteId;
+  }
+  if (options.processoId) {
+    where.processoId = options.processoId;
+  }
+  if (options.tipo) {
+    where.tipo = options.tipo;
+  }
+
+  const payload: Record<string, unknown> = {};
+  if (Object.keys(where).length) {
+    payload.where = where;
+  }
+
+  const limit = options.limit;
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    payload.limit = Math.min(Math.trunc(limit), 200);
+  }
+
+  try {
+    const { data } = await client.post(
+      `/api/v1/collections/${encodeURIComponent(CHROMA_COLLECTION)}/get`,
+      payload
+    );
+
+    const documentos = flattenResponse<string>(data?.documents);
+    const metadados = flattenResponse<Record<string, unknown>>(data?.metadatas);
+    const ids = flattenResponse<string>(data?.ids);
+
+    const registros: MemoriaRegistro[] = [];
+    const total = documentos.length;
+
+    for (let index = 0; index < total; index += 1) {
+      const texto = typeof documentos[index] === "string" ? documentos[index].trim() : "";
+      if (!texto) {
+        continue;
+      }
+
+      const meta = sanitizeMetadata(metadados[index]);
+      const tipo = typeof meta?.tipo === "string" ? (meta.tipo as string) : null;
+      const clienteId = typeof meta?.clienteId === "string" ? (meta.clienteId as string) : null;
+      const processoId = typeof meta?.processoId === "string" ? (meta.processoId as string) : null;
+      const criadoEm = typeof meta?.criadoEm === "string" ? (meta.criadoEm as string) : null;
+
+      registros.push({
+        id: typeof ids[index] === "string" ? ids[index] : `memoria_${index}`,
+        texto,
+        tipo,
+        clienteId,
+        processoId,
+        criadoEm,
+        metadados: meta,
+      });
+    }
+
+    return registros;
+  } catch (error) {
+    console.warn("[memoriaJuridica] Falha ao listar memórias", error);
+    return [];
+  }
+}
+
+export async function listarMemoria(options: ListarMemoriaOptions = {}): Promise<MemoriaRegistro[]> {
+  return listarMemoriasInterno(options);
+}
+
+export async function listarMemoriaPorCliente(
+  clienteId: string,
+  limit?: number
+): Promise<MemoriaRegistro[]> {
+  if (!clienteId?.trim()) {
+    return [];
+  }
+  return listarMemoriasInterno({ clienteId: clienteId.trim(), limit });
+}
+
+export async function listarMemoriaPorProcesso(
+  processoId: string,
+  limit?: number
+): Promise<MemoriaRegistro[]> {
+  if (!processoId?.trim()) {
+    return [];
+  }
+  return listarMemoriasInterno({ processoId: processoId.trim(), limit });
 }
