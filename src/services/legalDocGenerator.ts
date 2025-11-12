@@ -27,6 +27,7 @@ import {
   type MemoriaConteudoTipo,
   type MemoriaItem,
 } from "./memoriaJuridica.js";
+import { saveMemoryEntry } from "./memoriaLocal.js";
 const DEFAULT_JURIS_DOMAINS = ["stj.jus.br", "jusbrasil.com.br", "conjur.com.br"];
 const ARTICLE_VERIFICATION_DOMAINS = DEFAULT_JURIS_DOMAINS;
 const ARTICLE_REGEX = /Art\.?\s?\d{1,4}[ºo]?(?:,?\s?§\s?\d+)?/gi;
@@ -118,6 +119,34 @@ function formatTitle(value: string): string {
 }
 
 export { TIPOS_PECA };
+
+function recordLocalMemoryEntry(
+  texto: string,
+  tipo: TipoPeca | string,
+  {
+    clienteId,
+    processoId,
+  }: {
+    clienteId: string | null;
+    processoId: string | null;
+  }
+): void {
+  const sanitized = typeof texto === "string" ? texto.trim() : "";
+  if (!sanitized) {
+    return;
+  }
+
+  try {
+    saveMemoryEntry({
+      texto: sanitized,
+      tipo: typeof tipo === "string" ? tipo : String(tipo),
+      clienteId: clienteId ?? null,
+      processoId: processoId ?? null,
+    });
+  } catch (error) {
+    console.warn("[legalDocGenerator] falha ao registrar memória local", error);
+  }
+}
 
 export class MissingRequiredFieldsError extends Error {
   constructor(public readonly campos: CamposObrigatorios[]) {
@@ -512,8 +541,10 @@ async function persistPieceInMemory({
           categoria: tipoReferencia,
           ...(item.url ? { url: item.url } : {}),
           ...(item.title ? { referenciaTitulo: item.title } : {}),
-        });
-      }
+         },
+      });
+    }
+  }
 
   if (Array.isArray(artigos)) {
     for (const artigo of artigos) {
@@ -545,7 +576,6 @@ async function persistPieceInMemory({
     await Promise.allSettled(memorias);
   }
 }
-
 
 function getSectionContent(lines: string[], section: ParsedSection): string {
   if (section.contentStart >= section.contentEnd) {

@@ -136,7 +136,14 @@ export async function memorizarConteudos(itens) {
             if (!chunk)
                 continue;
             partes.push(chunk);
-            metadados.push({ tipo: item.tipo, ...(item.metadados ?? {}) });
+            const metadata = {
+                tipo: item.tipo,
+                ...(item.metadados ?? {}),
+            };
+            if (!("criadoEm" in metadata)) {
+                metadata.criadoEm = new Date().toISOString();
+            }
+            metadados.push(metadata);
         }
     }
     if (!partes.length) {
@@ -165,6 +172,7 @@ export async function memorizarTopico(nomeCliente, tituloPeca, topico, conteudo,
         cliente: nomeCliente || "desconhecido",
         titulo: tituloPeca,
         topico,
+        criadoEm: new Date().toISOString(),
         ...(metadados ?? {}),
     });
 }
@@ -219,4 +227,102 @@ export async function buscarConteudoRelacionado(pergunta, options) {
         console.warn("[memoriaJuridica] Falha ao consultar memórias relacionadas", error);
         return [];
     }
+}
+function flattenResponse(value) {
+    const result = [];
+    if (!Array.isArray(value)) {
+        return result;
+    }
+    for (const item of value) {
+        if (Array.isArray(item)) {
+            for (const nested of item) {
+                result.push(nested);
+            }
+        }
+        else {
+            result.push(item);
+        }
+    }
+    return result;
+}
+function sanitizeMetadata(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+    return { ...value };
+}
+async function listarMemoriasInterno(options = {}) {
+    const client = getClient();
+    if (!client) {
+        return [];
+    }
+    if (!(await ensureCollection())) {
+        return [];
+    }
+    const where = {};
+    if (options.clienteId) {
+        where.clienteId = options.clienteId;
+    }
+    if (options.processoId) {
+        where.processoId = options.processoId;
+    }
+    if (options.tipo) {
+        where.tipo = options.tipo;
+    }
+    const payload = {};
+    if (Object.keys(where).length) {
+        payload.where = where;
+    }
+    const limit = options.limit;
+    if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+        payload.limit = Math.min(Math.trunc(limit), 200);
+    }
+    try {
+        const { data } = await client.post(`/api/v1/collections/${encodeURIComponent(CHROMA_COLLECTION)}/get`, payload);
+        const documentos = flattenResponse(data?.documents);
+        const metadados = flattenResponse(data?.metadatas);
+        const ids = flattenResponse(data?.ids);
+        const registros = [];
+        const total = documentos.length;
+        for (let index = 0; index < total; index += 1) {
+            const texto = typeof documentos[index] === "string" ? documentos[index].trim() : "";
+            if (!texto) {
+                continue;
+            }
+            const meta = sanitizeMetadata(metadados[index]);
+            const tipo = typeof meta?.tipo === "string" ? meta.tipo : null;
+            const clienteId = typeof meta?.clienteId === "string" ? meta.clienteId : null;
+            const processoId = typeof meta?.processoId === "string" ? meta.processoId : null;
+            const criadoEm = typeof meta?.criadoEm === "string" ? meta.criadoEm : null;
+            registros.push({
+                id: typeof ids[index] === "string" ? ids[index] : `memoria_${index}`,
+                texto,
+                tipo,
+                clienteId,
+                processoId,
+                criadoEm,
+                metadados: meta,
+            });
+        }
+        return registros;
+    }
+    catch (error) {
+        console.warn("[memoriaJuridica] Falha ao listar memórias", error);
+        return [];
+    }
+}
+export async function listarMemoria(options = {}) {
+    return listarMemoriasInterno(options);
+}
+export async function listarMemoriaPorCliente(clienteId, limit) {
+    if (!clienteId?.trim()) {
+        return [];
+    }
+    return listarMemoriasInterno({ clienteId: clienteId.trim(), limit });
+}
+export async function listarMemoriaPorProcesso(processoId, limit) {
+    if (!processoId?.trim()) {
+        return [];
+    }
+    return listarMemoriasInterno({ processoId: processoId.trim(), limit });
 }
